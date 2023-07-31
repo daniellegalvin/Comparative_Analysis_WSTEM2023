@@ -1,0 +1,2753 @@
+---
+title: "Women in STEM Manuscript Materials"
+author: "Danielle Galvin"
+date: "2023"
+output: html_document
+---
+
+Hello! This markdown file contains all of the code used to conduct the analysis and to create the figures seen in the manuscript "Comparative analysis of gender disparity in academic positions based on US region and STEM discipline". If you have any questions, please contact the corresponding author.
+
+Load packages
+```{r}
+library(Matrix)
+library(dbplyr)
+library(brms)
+library(tidyverse)
+library(tidybayes)
+library(viridis)
+```
+
+Load data
+```{r}
+data <- read_csv("Data/STEM_data.csv")
+
+#I want to add a column with the total number of people in each department, then I am filtering out any department without people employed in a specific position type
+data <- data %>% 
+  group_by(university_full, department_umbrella, position) %>% 
+  mutate(total_employed=sum(number)) %>% 
+  filter(total_employed>0) %>% 
+  ungroup() %>% 
+  view()
+
+```
+
+Look at the data: take a look at the raw data
+```{r}
+head(data)
+
+#Want to know: how does the number of men and women employed in instructor and tenure track positions vary based on region of the US.
+```
+
+Evaluating the proportion of women employed based on position (TT or non), division (US region), and STEM department.
+```{r}
+prop_model <- brm(number|trials(total_employed) ~ 1+position*division*department_umbrella,
+                    family=binomial(link="logit"),
+                    data=data %>% filter(gender=="female"),
+                    prior=c(prior(normal(0,1), class="b"),
+                          prior(normal(0,1), class="Intercept")),
+                    #sample_prior="only",
+                    file="Models/prop_model.RDS",
+                    file_refit="on_change",
+                    iter=4000, warmup=1000, chains=4)
+
+saveRDS(prop_model, "Models/prop_model.RDS")
+
+#View the stats
+prop_model
+
+#The data we will use
+mu = prop_model$data %>% 
+  ungroup %>% 
+  distinct(position, division, department_umbrella, total_employed) %>% 
+  add_epred_draws(prop_model, dpar = T) 
+
+#Plots of the posterior, used to evaluate fit
+pp_check(prop_model, type = "boxplot") +
+  scale_y_log10()
+
+plot(conditional_effects(prop_model), points=T)
+
+pp_check(prop_model, type="stat_grouped", group="position")
+pp_check(prop_model, type="stat_grouped", group="division")
+pp_check(prop_model, type="stat_grouped", group="department_umbrella")
+```
+
+Do a sensitivity analysis of your model
+```{r}
+#Here you should run your model again, but this time double the standard deviations of your priors. Visually inspect the graphs, are they different or the same? If they are different, make sure your priors are well justified!
+
+prop_model_sens <- brm(number|trials(total_employed) ~ 1+position*division*department_umbrella,
+                    family=binomial(link="logit"),
+                    data=data %>% filter(gender=="female"),
+                    prior=c(prior(normal(0,2), class="b"),
+                          prior(normal(0,2), class="Intercept")),
+                    #sample_prior="only",
+                    file="Models/prop_model_sens.RDS",
+                    file_refit="on_change",
+                    iter=4000, warmup=1000, chains=4)
+
+#Save the model
+saveRDS(prop_model_sens, "Models/prop_model_sens.RDS")
+
+#Call the model to look at outputs
+prop_model_sens
+
+plot(conditional_effects(prop_model_sens), points=T)
+pp_check(prop_model_sens, type="stat_grouped", group="position")
+pp_check(prop_model_sens, type="stat_grouped", group="division")
+pp_check(prop_model_sens, type="stat_grouped", group="department_umbrella")
+
+#The estimates are virtually the same, with wider credible intervals, therefore we are justified in using the priors we selected.
+```
+
+Plot the posterior values from your model
+```{r}
+mu$.row=NULL 
+mu$total_employed=NULL
+
+#This will give the mean proportion of women employed in each position for each division and the 95% CI
+mu %>% 
+  mean_qi(mu)
+
+#Now you need to plot your data! You may have to pivot it based on what you want to do, but visualize that gorgeous analysis here:
+
+all_differences_violins <- ggplot(data=mu, aes(x=position, y=mu))+
+  facet_grid(department_umbrella ~ division)+
+  geom_violin()
+
+all_differences_violins
+
+ggsave("prop_model_plot1.jpg", plot=all_differences_violins, width=8, height=4, dpi=1000)
+
+```
+
+```{r}
+prop_with_ref <- mu %>% 
+  ggplot(aes(x=position, y=mu, fill=department_umbrella))+
+  geom_violin()+
+  # scale_fill_grey()+
+  facet_wrap(vars(division))+
+  geom_hline(yintercept=0.5)+
+  ylim(0,1)
+
+prop_with_ref
+
+ggsave("prop_model_plot2.jpg", plot=prop_with_ref, width=8, height=4, units="in", dpi=600)
+
+prop_with_ref_colors <- mu %>% 
+  ggplot(aes(x=position, y=mu, fill=division))+
+  geom_violin()+
+  scale_fill_viridis(discrete=TRUE, option="turbo")+
+  facet_wrap(vars(department_umbrella))+
+  geom_hline(yintercept=0.5)+
+  ylim(0,1)+
+  labs(y="Proportion of women employed", x="Position type")
+
+prop_with_ref_colors
+
+ggsave("prop_model_plot3.jpg", plot=prop_with_ref_colors, width=8, height=4, units="in", dpi=600)
+```
+
+Calculating credible intervals and other necessary values for the model
+```{r}
+mu %>% 
+  mean_qi(mu)
+
+#Median credible interval for the proportion of women in each position type regardless of region
+mu %>% 
+  group_by(position) %>% 
+  mean_qi(mu)
+
+#Median credible interval for the proportion of women in each region regardless of position
+mu %>% 
+  group_by(division) %>% 
+  mean_qi(mu)
+
+#Mean credible interval for the proportion of women in each department type
+mu %>% 
+  group_by(department_umbrella) %>% 
+  mean_qi(mu)
+
+#Median credible interval for the proportion of women in each position and division
+mu %>% 
+  group_by(division, position) %>% 
+  mean_qi(mu)
+
+#mean credible interval for the proportion of women in each position and department type
+mu %>% 
+  group_by(position, department_umbrella) %>% 
+  mean_qi(mu)
+
+#mean credible interval for the proportion of women in each department for each division
+mu %>% 
+  group_by(department_umbrella, division) %>% 
+  mean_qi(mu)
+```
+
+```{r}
+head(mu)
+
+#Need to manipulate the data frame so that I can calculate the difference in the proportion of women employed for each division, department, and position. Here mu is the proportion of women while .epred is the number of women, we only care about mu moving forward. I will also calculate the associated CI.
+
+#Making a data frame that I can use to calculate credible intervals
+test_model_prop <- mu %>% 
+  select(-.chain, -.iteration, -.epred) %>%
+  distinct() %>% 
+  pivot_wider(names_from = "position", values_from = "mu") %>% 
+  mutate(diff_position = tt - instructor)
+
+#Another data frame which I can use to calculate division and position specific values
+specific_model_prop <- test_model_prop %>% 
+  select(-diff_position) %>% 
+  pivot_wider(id_cols=c(division, .draw),
+              names_from=department_umbrella, 
+              values_from=c("tt", "instructor")) %>% 
+  pivot_wider(id_cols=c(.draw),
+              names_from=division,
+              values_from=c("tt_biology", "tt_chemistry", "tt_physics", "tt_comp_sci", "tt_math", "tt_engineering", "instructor_biology", "instructor_chemistry", "instructor_physics", "instructor_comp_sci", "instructor_math", "instructor_engineering")) %>% 
+  view()
+
+```
+
+Calculating the probability that the proportion of women employed in tenure track positions is greater than the proportion of women employed in instructor positions for each division and department combination
+```{r}
+position_diff_prop <- specific_model_prop %>% 
+  mutate(biology_mountain=tt_biology_mountain-instructor_biology_mountain) %>% 
+  mutate(biology_mid_atlantic=tt_biology_mid_atlantic-instructor_biology_mid_atlantic) %>% 
+  mutate(biology_pacific=tt_biology_pacific-instructor_biology_pacific) %>% 
+  mutate(biology_w_n_central=tt_biology_w_n_central-instructor_biology_w_n_central) %>% 
+  mutate(biology_e_n_central=tt_biology_e_n_central-instructor_biology_e_n_central) %>% 
+  mutate(biology_w_s_central=tt_biology_w_s_central-instructor_biology_w_s_central) %>% 
+  mutate(biology_s_atlantic=tt_biology_s_atlantic-instructor_biology_s_atlantic) %>% 
+  mutate(biology_new_england=tt_biology_new_england-instructor_biology_new_england) %>% 
+  mutate(biology_e_s_central=tt_biology_e_s_central-instructor_biology_e_s_central) %>% 
+  mutate(chemistry_mountain=tt_chemistry_mountain-instructor_chemistry_mountain) %>% 
+  mutate(chemistry_mid_atlantic=tt_chemistry_mid_atlantic-instructor_chemistry_mid_atlantic) %>% 
+  mutate(chemistry_pacific=tt_chemistry_pacific-instructor_chemistry_pacific) %>% 
+  mutate(chemistry_w_n_central=tt_chemistry_w_n_central-instructor_chemistry_w_n_central) %>% 
+  mutate(chemistry_e_n_central=tt_chemistry_e_n_central-instructor_chemistry_e_n_central) %>% 
+  mutate(chemistry_w_s_central=tt_chemistry_w_s_central-instructor_chemistry_w_s_central) %>% 
+  mutate(chemistry_s_atlantic=tt_chemistry_s_atlantic-instructor_chemistry_s_atlantic) %>% 
+  mutate(chemistry_new_england=tt_chemistry_new_england-instructor_chemistry_new_england) %>% 
+  mutate(chemistry_e_s_central=tt_chemistry_e_s_central-instructor_chemistry_e_s_central) %>% 
+  mutate(physics_mountain=tt_physics_mountain-instructor_physics_mountain) %>% 
+  mutate(physics_mid_atlantic=tt_physics_mid_atlantic-instructor_physics_mid_atlantic) %>% 
+  mutate(physics_pacific=tt_physics_pacific-instructor_physics_pacific) %>% 
+  mutate(physics_w_n_central=tt_physics_w_n_central-instructor_physics_w_n_central) %>% 
+  mutate(physics_e_n_central=tt_physics_e_n_central-instructor_physics_e_n_central) %>% 
+  mutate(physics_w_s_central=tt_physics_w_s_central-instructor_physics_w_s_central) %>% 
+  mutate(physics_s_atlantic=tt_physics_s_atlantic-instructor_physics_s_atlantic) %>% 
+  mutate(physics_new_england=tt_physics_new_england-instructor_physics_new_england) %>% 
+  mutate(physics_e_s_central=tt_physics_e_s_central-instructor_physics_e_s_central) %>% 
+  mutate(math_mountain=tt_math_mountain-instructor_math_mountain) %>% 
+  mutate(math_mid_atlantic=tt_math_mid_atlantic-instructor_math_mid_atlantic) %>% 
+  mutate(math_pacific=tt_math_pacific-instructor_math_pacific) %>% 
+  mutate(math_w_n_central=tt_math_w_n_central-instructor_math_w_n_central) %>% 
+  mutate(math_e_n_central=tt_math_e_n_central-instructor_math_e_n_central) %>% 
+  mutate(math_w_s_central=tt_math_w_s_central-instructor_math_w_s_central) %>% 
+  mutate(math_s_atlantic=tt_math_s_atlantic-instructor_math_s_atlantic) %>% 
+  mutate(math_new_england=tt_math_new_england-instructor_math_new_england) %>% 
+  mutate(math_e_s_central=tt_math_e_s_central-instructor_math_e_s_central) %>% 
+  mutate(comp_sci_mountain=tt_comp_sci_mountain-instructor_comp_sci_mountain) %>% 
+  mutate(comp_sci_mid_atlantic=tt_comp_sci_mid_atlantic-instructor_comp_sci_mid_atlantic) %>% 
+  mutate(comp_sci_pacific=tt_comp_sci_pacific-instructor_comp_sci_pacific) %>% 
+  mutate(comp_sci_w_n_central=tt_comp_sci_w_n_central-instructor_comp_sci_w_n_central) %>% 
+  mutate(comp_sci_e_n_central=tt_comp_sci_e_n_central-instructor_comp_sci_e_n_central) %>% 
+  mutate(comp_sci_w_s_central=tt_comp_sci_w_s_central-instructor_comp_sci_w_s_central) %>% 
+  mutate(comp_sci_s_atlantic=tt_comp_sci_s_atlantic-instructor_comp_sci_s_atlantic) %>% 
+  mutate(comp_sci_new_england=tt_comp_sci_new_england-instructor_comp_sci_new_england) %>% 
+  mutate(comp_sci_e_s_central=tt_comp_sci_e_s_central-instructor_comp_sci_e_s_central) %>% 
+  mutate(engineering_mountain=tt_engineering_mountain-instructor_engineering_mountain) %>% 
+  mutate(engineering_mid_atlantic=tt_engineering_mid_atlantic-instructor_engineering_mid_atlantic) %>% 
+  mutate(engineering_pacific=tt_engineering_pacific-instructor_engineering_pacific) %>% 
+  mutate(engineering_w_n_central=tt_engineering_w_n_central-instructor_engineering_w_n_central) %>% 
+  mutate(engineering_e_n_central=tt_engineering_e_n_central-instructor_engineering_e_n_central) %>% 
+  mutate(engineering_w_s_central=tt_engineering_w_s_central-instructor_engineering_w_s_central) %>% 
+  mutate(engineering_s_atlantic=tt_engineering_s_atlantic-instructor_engineering_s_atlantic) %>% 
+  mutate(engineering_new_england=tt_engineering_new_england-instructor_engineering_new_england) %>% 
+  mutate(engineering_e_s_central=tt_engineering_e_s_central-instructor_engineering_e_s_central)
+
+#Calculating the probability that there is a greater proportion of women employed in tt positions vs instructor positions for each division and department type
+#biology
+position_diff_prop %>% 
+  summarize(sum(biology_mountain>0)/nrow(.)) 
+position_diff_prop %>%
+  summarize(sum(biology_mid_atlantic>0)/nrow(.))
+position_diff_prop %>% 
+  summarize(sum(biology_pacific>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(biology_w_n_central>0)/nrow(.))
+position_diff_prop %>% 
+  summarize(sum(biology_e_n_central>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(biology_w_s_central>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(biology_s_atlantic>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(biology_new_england>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(biology_e_s_central>0)/nrow(.)) 
+
+#chemistry
+position_diff_prop %>% 
+  summarize(sum(chemistry_mountain>0)/nrow(.)) 
+position_diff_prop %>%
+  summarize(sum(chemistry_mid_atlantic>0)/nrow(.))
+position_diff_prop %>% 
+  summarize(sum(chemistry_pacific>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(chemistry_w_n_central>0)/nrow(.))
+position_diff_prop %>% 
+  summarize(sum(chemistry_e_n_central>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(chemistry_w_s_central>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(chemistry_s_atlantic>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(chemistry_new_england>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(chemistry_e_s_central>0)/nrow(.))
+
+#physics
+position_diff_prop %>% 
+  summarize(sum(physics_mountain>0)/nrow(.)) 
+position_diff_prop %>%
+  summarize(sum(physics_mid_atlantic>0)/nrow(.))
+position_diff_prop %>% 
+  summarize(sum(physics_pacific>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(physics_w_n_central>0)/nrow(.))
+position_diff_prop %>% 
+  summarize(sum(physics_e_n_central>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(physics_w_s_central>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(physics_s_atlantic>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(physics_new_england>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(physics_e_s_central>0)/nrow(.))
+
+#math
+position_diff_prop %>% 
+  summarize(sum(math_mountain>0)/nrow(.)) 
+position_diff_prop %>%
+  summarize(sum(math_mid_atlantic>0)/nrow(.))
+position_diff_prop %>% 
+  summarize(sum(math_pacific>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(math_w_n_central>0)/nrow(.))
+position_diff_prop %>% 
+  summarize(sum(math_e_n_central>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(math_w_s_central>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(math_s_atlantic>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(math_new_england>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(math_e_s_central>0)/nrow(.))
+
+#computer science
+position_diff_prop %>% 
+  summarize(sum(comp_sci_mountain>0)/nrow(.)) 
+position_diff_prop %>%
+  summarize(sum(comp_sci_mid_atlantic>0)/nrow(.))
+position_diff_prop %>% 
+  summarize(sum(comp_sci_pacific>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(comp_sci_w_n_central>0)/nrow(.))
+position_diff_prop %>% 
+  summarize(sum(comp_sci_e_n_central>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(comp_sci_w_s_central>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(comp_sci_s_atlantic>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(comp_sci_new_england>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(comp_sci_e_s_central>0)/nrow(.))
+
+#engineering
+position_diff_prop %>% 
+  summarize(sum(engineering_mountain>0)/nrow(.)) 
+position_diff_prop %>%
+  summarize(sum(engineering_mid_atlantic>0)/nrow(.))
+position_diff_prop %>% 
+  summarize(sum(engineering_pacific>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(engineering_w_n_central>0)/nrow(.))
+position_diff_prop %>% 
+  summarize(sum(engineering_e_n_central>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(engineering_w_s_central>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(engineering_s_atlantic>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(engineering_new_england>0)/nrow(.)) 
+position_diff_prop %>% 
+  summarize(sum(engineering_e_s_central>0)/nrow(.))
+```
+
+Calculating the probability that the proportion of women employed in division A is greater than the proportion of women employed in division B for each department and position type.
+Biology
+```{r}
+#Biology
+division_diff_biology <- specific_model_prop %>% 
+  mutate(e_s_central_e_n_central_biology_tt=tt_biology_e_s_central-tt_biology_e_n_central) %>% 
+  mutate(mid_atlantic_e_n_central_biology_tt=tt_biology_mid_atlantic-tt_biology_e_n_central) %>% 
+  mutate(mid_atlantic_e_s_central_biology_tt=tt_biology_s_atlantic-tt_biology_e_s_central) %>% 
+  mutate(mountain_e_n_central_biology_tt=tt_biology_mountain-tt_biology_e_n_central) %>% 
+  mutate(mountain_e_s_central_biology_tt=tt_biology_mountain-tt_biology_e_s_central) %>% 
+  mutate(mountain_mid_atlantic_biology_tt=tt_biology_mountain-tt_biology_mid_atlantic) %>% 
+  mutate(new_england_e_n_central_biology_tt=tt_biology_new_england-tt_biology_e_n_central) %>% 
+  mutate(new_england_e_s_central_biology_tt=tt_biology_new_england-tt_biology_e_s_central) %>% 
+  mutate(new_england_mid_atlantic_biology_tt=tt_biology_new_england-tt_biology_mid_atlantic) %>% 
+  mutate(new_england_mountain_biology_tt=tt_biology_new_england-tt_biology_mountain) %>% 
+  mutate(pacific_e_n_central_biology_tt=tt_biology_pacific-tt_biology_e_n_central) %>% 
+  mutate(pacific_e_s_central_biology_tt=tt_biology_pacific-tt_biology_e_s_central) %>% 
+  mutate(pacific_mid_atlantic_biology_tt=tt_biology_pacific-tt_biology_mid_atlantic) %>% 
+  mutate(pacific_mountain_biology_tt=tt_biology_pacific-tt_biology_mountain) %>% 
+  mutate(pacific_new_england_biology_tt=tt_biology_pacific-tt_biology_new_england) %>% 
+  mutate(s_atlantic_e_n_central_biology_tt=tt_biology_s_atlantic-tt_biology_e_n_central) %>% 
+  mutate(s_atlantic_e_s_central_biology_tt=tt_biology_s_atlantic-tt_biology_e_s_central) %>% 
+  mutate(s_atlantic_mid_atlantic_biology_tt=tt_biology_s_atlantic-tt_biology_mid_atlantic) %>% 
+  mutate(s_atlantic_mountain_biology_tt=tt_biology_s_atlantic-tt_biology_mountain) %>% 
+  mutate(s_atlantic_new_england_biology_tt=tt_biology_s_atlantic-tt_biology_new_england) %>% 
+  mutate(s_atlantic_pacific_biology_tt=tt_biology_s_atlantic-tt_biology_pacific) %>% 
+  mutate(w_n_central_e_n_central_biology_tt=tt_biology_w_n_central-tt_biology_e_n_central) %>% 
+  mutate(w_n_central_e_s_central_biology_tt=tt_biology_w_n_central-tt_biology_e_s_central) %>% 
+  mutate(w_n_central_mid_atlantic_biology_tt=tt_biology_w_n_central-tt_biology_mid_atlantic) %>% 
+  mutate(w_n_central_mountain_biology_tt=tt_biology_w_n_central-tt_biology_mountain) %>% 
+  mutate(w_n_central_new_england_biology_tt=tt_biology_w_n_central-tt_biology_new_england) %>% 
+  mutate(w_n_central_pacific_biology_tt=tt_biology_w_n_central-tt_biology_pacific) %>% 
+  mutate(w_n_central_s_atlantic_biology_tt=tt_biology_w_n_central-tt_biology_s_atlantic) %>% 
+  mutate(w_s_central_e_n_central_biology_tt=tt_biology_w_s_central-tt_biology_e_n_central) %>% 
+  mutate(w_s_central_e_s_central_biology_tt=tt_biology_w_s_central-tt_biology_e_s_central) %>% 
+  mutate(w_s_central_mid_atlantic_biology_tt=tt_biology_w_s_central-tt_biology_mid_atlantic) %>% 
+  mutate(w_s_central_mountain_biology_tt=tt_biology_w_s_central-tt_biology_mountain) %>% 
+  mutate(w_s_central_new_england_biology_tt=tt_biology_w_s_central-tt_biology_new_england) %>% 
+  mutate(w_s_central_pacific_biology_tt=tt_biology_w_s_central-tt_biology_pacific) %>% 
+  mutate(w_s_central_s_atlantic_biology_tt=tt_biology_w_s_central-tt_biology_s_atlantic) %>% 
+  mutate(w_s_central_w_n_central_biology_tt=tt_biology_w_s_central-tt_biology_w_n_central) %>% 
+  mutate(w_n_central_w_s_central_biology_tt=tt_biology_w_n_central-tt_biology_w_s_central) %>% 
+  mutate(s_atlantic_w_n_central_biology_tt=tt_biology_s_atlantic-tt_biology_w_n_central) %>% 
+  mutate(s_atlantic_w_s_central_biology_tt=tt_biology_s_atlantic-tt_biology_w_s_central) %>% 
+  mutate(pacific_w_n_central_biology_tt=tt_biology_pacific-tt_biology_w_n_central) %>% 
+  mutate(pacific_w_s_central_biology_tt=tt_biology_pacific-tt_biology_w_s_central) %>% 
+  mutate(pacific_s_atlantic_biology_tt=tt_biology_pacific-tt_biology_s_atlantic) %>% 
+  mutate(new_england_w_n_central_biology_tt=tt_biology_new_england-tt_biology_w_n_central) %>% 
+  mutate(new_england_w_s_central_biology_tt=tt_biology_new_england-tt_biology_w_s_central) %>% 
+  mutate(new_england_s_atlantic_biology_tt=tt_biology_new_england-tt_biology_s_atlantic) %>% 
+  mutate(new_england_pacific_biology_tt=tt_biology_new_england-tt_biology_pacific) %>% 
+  mutate(mountain_w_n_central_biology_tt=tt_biology_mountain-tt_biology_w_n_central) %>% 
+  mutate(mountain_w_s_central_biology_tt=tt_biology_mountain-tt_biology_w_s_central) %>% 
+  mutate(mountain_s_atlantic_biology_tt=tt_biology_mountain-tt_biology_s_atlantic) %>% 
+  mutate(mountain_pacific_biology_tt=tt_biology_mountain-tt_biology_pacific) %>% 
+  mutate(mountain_new_england_biology_tt=tt_biology_mountain-tt_biology_new_england) %>% 
+  mutate(mid_atlantic_w_n_central_biology_tt=tt_biology_mid_atlantic-tt_biology_w_n_central) %>% 
+  mutate(mid_atlantic_w_s_central_biology_tt=tt_biology_mid_atlantic-tt_biology_w_s_central) %>% 
+  mutate(mid_atlantic_s_atlantic_biology_tt=tt_biology_mid_atlantic-tt_biology_s_atlantic) %>% 
+  mutate(mid_atlantic_mountain_biology_tt=tt_biology_mid_atlantic-tt_biology_mountain) %>% 
+  mutate(mid_atlantic_new_england_biology_tt=tt_biology_mid_atlantic-tt_biology_new_england) %>% 
+  mutate(mid_atlantic_pacific_biology_tt=tt_biology_mid_atlantic-tt_biology_pacific) %>% 
+  mutate(e_s_central_w_n_central_biology_tt=tt_biology_e_s_central-tt_biology_w_n_central) %>% 
+  mutate(e_s_central_w_s_central_biology_tt=tt_biology_e_s_central-tt_biology_w_s_central) %>% 
+  mutate(e_s_central_mid_atlantic_biology_tt=tt_biology_e_s_central-tt_biology_mid_atlantic) %>% 
+  mutate(e_s_central_mountain_biology_tt=tt_biology_e_s_central-tt_biology_mountain) %>% 
+  mutate(e_s_central_new_england_biology_tt=tt_biology_e_s_central-tt_biology_new_england) %>% 
+  mutate(e_s_central_pacific_biology_tt=tt_biology_e_s_central-tt_biology_pacific) %>% 
+  mutate(e_s_central_s_atlantic_biology_tt=tt_biology_e_s_central-tt_biology_s_atlantic) %>% 
+  mutate(e_n_central_w_s_central_biology_tt=tt_biology_e_n_central-tt_biology_w_s_central) %>% 
+  mutate(e_n_central_e_s_central_biology_tt=tt_biology_e_n_central-tt_biology_e_s_central) %>% 
+  mutate(e_n_central_mid_atlantic_biology_tt=tt_biology_e_n_central-tt_biology_mid_atlantic) %>% 
+  mutate(e_n_central_mountain_biology_tt=tt_biology_e_n_central-tt_biology_mountain) %>% 
+  mutate(e_n_central_new_england_biology_tt=tt_biology_e_n_central-tt_biology_new_england) %>% 
+  mutate(e_n_central_pacific_biology_tt=tt_biology_e_n_central-tt_biology_pacific) %>% 
+  mutate(e_n_central_s_atlantic_biology_tt=tt_biology_e_n_central-tt_biology_s_atlantic) %>% 
+  mutate(e_n_central_w_n_central_biology_tt=tt_biology_e_n_central-tt_biology_w_n_central)
+
+
+#Calculating the probability that there is a greater proportion of women employed division A compared to division B for each department and position type
+#Tenure track
+division_diff_biology %>% 
+  summarize(sum(e_s_central_e_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mid_atlantic_e_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mid_atlantic_e_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mountain_e_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mountain_e_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mountain_mid_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(new_england_e_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(new_england_e_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(new_england_mid_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(new_england_mountain_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(pacific_e_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(pacific_e_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(pacific_mid_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(pacific_mountain_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(pacific_new_england_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(s_atlantic_e_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(s_atlantic_e_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(s_atlantic_mid_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(s_atlantic_mountain_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(s_atlantic_new_england_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(s_atlantic_pacific_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_n_central_e_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_n_central_e_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_n_central_mid_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_n_central_mountain_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_n_central_new_england_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_n_central_pacific_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_n_central_s_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_s_central_e_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_s_central_e_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_s_central_mid_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_s_central_mountain_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_s_central_new_england_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_s_central_pacific_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_s_central_s_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_s_central_w_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(w_n_central_w_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(s_atlantic_w_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(s_atlantic_w_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(pacific_w_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(pacific_w_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(pacific_s_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(new_england_w_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(new_england_w_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(new_england_s_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(new_england_pacific_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mountain_w_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mountain_w_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mountain_s_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mountain_pacific_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mountain_new_england_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mid_atlantic_w_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mid_atlantic_w_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mid_atlantic_s_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mid_atlantic_mountain_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mid_atlantic_new_england_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(mid_atlantic_pacific_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_s_central_w_n_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_s_central_w_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_s_central_mid_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_s_central_mountain_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_s_central_new_england_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_s_central_pacific_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_s_central_s_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_n_central_w_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_n_central_e_s_central_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_n_central_mid_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_n_central_mountain_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_n_central_new_england_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_n_central_pacific_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_n_central_s_atlantic_biology_tt>0)/nrow(.))
+division_diff_biology %>% 
+  summarize(sum(e_n_central_w_n_central_biology_tt>0)/nrow(.))
+
+#Calculating the mean difference value
+division_diff_biology %>% 
+  summarize(mean(e_s_central_e_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mid_atlantic_e_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mid_atlantic_e_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mountain_e_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mountain_e_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mountain_mid_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(new_england_e_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(new_england_e_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(new_england_mid_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(new_england_mountain_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(pacific_e_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(pacific_e_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(pacific_mid_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(pacific_mountain_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(pacific_new_england_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(s_atlantic_e_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(s_atlantic_e_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(s_atlantic_mid_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(s_atlantic_mountain_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(s_atlantic_new_england_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(s_atlantic_pacific_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_n_central_e_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_n_central_e_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_n_central_mid_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_n_central_mountain_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_n_central_new_england_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_n_central_pacific_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_n_central_s_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_s_central_e_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_s_central_e_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_s_central_mid_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_s_central_mountain_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_s_central_new_england_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_s_central_pacific_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_s_central_s_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_s_central_w_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(w_n_central_w_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(s_atlantic_w_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(s_atlantic_w_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(pacific_w_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(pacific_w_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(pacific_s_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(new_england_w_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(new_england_w_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(new_england_s_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(new_england_pacific_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mountain_w_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mountain_w_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mountain_s_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mountain_pacific_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mountain_new_england_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mid_atlantic_w_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mid_atlantic_w_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mid_atlantic_s_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mid_atlantic_mountain_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mid_atlantic_new_england_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(mid_atlantic_pacific_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_s_central_w_n_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_s_central_w_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_s_central_mid_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_s_central_mountain_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_s_central_new_england_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_s_central_pacific_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_s_central_s_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_n_central_w_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_n_central_e_s_central_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_n_central_mid_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_n_central_mountain_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_n_central_new_england_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_n_central_pacific_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_n_central_s_atlantic_biology_tt))
+division_diff_biology %>% 
+  summarize(mean(e_n_central_w_n_central_biology_tt))
+
+```
+
+Chemistry
+```{r}
+#Chemistry
+division_diff_chemistry <- specific_model_prop %>% 
+  mutate(e_s_central_e_n_central_chemistry_tt=tt_chemistry_e_s_central-tt_chemistry_e_n_central) %>% 
+  mutate(mid_atlantic_e_n_central_chemistry_tt=tt_chemistry_mid_atlantic-tt_chemistry_e_n_central) %>% 
+  mutate(mid_atlantic_e_s_central_chemistry_tt=tt_chemistry_s_atlantic-tt_chemistry_e_s_central) %>% 
+  mutate(mountain_e_n_central_chemistry_tt=tt_chemistry_mountain-tt_chemistry_e_n_central) %>% 
+  mutate(mountain_e_s_central_chemistry_tt=tt_chemistry_mountain-tt_chemistry_e_s_central) %>% 
+  mutate(mountain_mid_atlantic_chemistry_tt=tt_chemistry_mountain-tt_chemistry_mid_atlantic) %>% 
+  mutate(new_england_e_n_central_chemistry_tt=tt_chemistry_new_england-tt_chemistry_e_n_central) %>% 
+  mutate(new_england_e_s_central_chemistry_tt=tt_chemistry_new_england-tt_chemistry_e_s_central) %>% 
+  mutate(new_england_mid_atlantic_chemistry_tt=tt_chemistry_new_england-tt_chemistry_mid_atlantic) %>% 
+  mutate(new_england_mountain_chemistry_tt=tt_chemistry_new_england-tt_chemistry_mountain) %>% 
+  mutate(pacific_e_n_central_chemistry_tt=tt_chemistry_pacific-tt_chemistry_e_n_central) %>% 
+  mutate(pacific_e_s_central_chemistry_tt=tt_chemistry_pacific-tt_chemistry_e_s_central) %>% 
+  mutate(pacific_mid_atlantic_chemistry_tt=tt_chemistry_pacific-tt_chemistry_mid_atlantic) %>% 
+  mutate(pacific_mountain_chemistry_tt=tt_chemistry_pacific-tt_chemistry_mountain) %>% 
+  mutate(pacific_new_england_chemistry_tt=tt_chemistry_pacific-tt_chemistry_new_england) %>% 
+  mutate(s_atlantic_e_n_central_chemistry_tt=tt_chemistry_s_atlantic-tt_chemistry_e_n_central) %>% 
+  mutate(s_atlantic_e_s_central_chemistry_tt=tt_chemistry_s_atlantic-tt_chemistry_e_s_central) %>% 
+  mutate(s_atlantic_mid_atlantic_chemistry_tt=tt_chemistry_s_atlantic-tt_chemistry_mid_atlantic) %>% 
+  mutate(s_atlantic_mountain_chemistry_tt=tt_chemistry_s_atlantic-tt_chemistry_mountain) %>% 
+  mutate(s_atlantic_new_england_chemistry_tt=tt_chemistry_s_atlantic-tt_chemistry_new_england) %>% 
+  mutate(s_atlantic_pacific_chemistry_tt=tt_chemistry_s_atlantic-tt_chemistry_pacific) %>% 
+  mutate(w_n_central_e_n_central_chemistry_tt=tt_chemistry_w_n_central-tt_chemistry_e_n_central) %>% 
+  mutate(w_n_central_e_s_central_chemistry_tt=tt_chemistry_w_n_central-tt_chemistry_e_s_central) %>% 
+  mutate(w_n_central_mid_atlantic_chemistry_tt=tt_chemistry_w_n_central-tt_chemistry_mid_atlantic) %>% 
+  mutate(w_n_central_mountain_chemistry_tt=tt_chemistry_w_n_central-tt_chemistry_mountain) %>% 
+  mutate(w_n_central_new_england_chemistry_tt=tt_chemistry_w_n_central-tt_chemistry_new_england) %>% 
+  mutate(w_n_central_pacific_chemistry_tt=tt_chemistry_w_n_central-tt_chemistry_pacific) %>% 
+  mutate(w_n_central_s_atlantic_chemistry_tt=tt_chemistry_w_n_central-tt_chemistry_s_atlantic) %>% 
+  mutate(w_s_central_e_n_central_chemistry_tt=tt_chemistry_w_s_central-tt_chemistry_e_n_central) %>% 
+  mutate(w_s_central_e_s_central_chemistry_tt=tt_chemistry_w_s_central-tt_chemistry_e_s_central) %>% 
+  mutate(w_s_central_mid_atlantic_chemistry_tt=tt_chemistry_w_s_central-tt_chemistry_mid_atlantic) %>% 
+  mutate(w_s_central_mountain_chemistry_tt=tt_chemistry_w_s_central-tt_chemistry_mountain) %>% 
+  mutate(w_s_central_new_england_chemistry_tt=tt_chemistry_w_s_central-tt_chemistry_new_england) %>% 
+  mutate(w_s_central_pacific_chemistry_tt=tt_chemistry_w_s_central-tt_chemistry_pacific) %>% 
+  mutate(w_s_central_s_atlantic_chemistry_tt=tt_chemistry_w_s_central-tt_chemistry_s_atlantic) %>% 
+  mutate(w_s_central_w_n_central_chemistry_tt=tt_chemistry_w_s_central-tt_chemistry_w_n_central) %>% 
+  mutate(w_n_central_w_s_central_chemistry_tt=tt_chemistry_w_n_central-tt_chemistry_w_s_central) %>% 
+  mutate(s_atlantic_w_n_central_chemistry_tt=tt_chemistry_s_atlantic-tt_chemistry_w_n_central) %>% 
+  mutate(s_atlantic_w_s_central_chemistry_tt=tt_chemistry_s_atlantic-tt_chemistry_w_s_central) %>% 
+  mutate(pacific_w_n_central_chemistry_tt=tt_chemistry_pacific-tt_chemistry_w_n_central) %>% 
+  mutate(pacific_w_s_central_chemistry_tt=tt_chemistry_pacific-tt_chemistry_w_s_central) %>% 
+  mutate(pacific_s_atlantic_chemistry_tt=tt_chemistry_pacific-tt_chemistry_s_atlantic) %>% 
+  mutate(new_england_w_n_central_chemistry_tt=tt_chemistry_new_england-tt_chemistry_w_n_central) %>% 
+  mutate(new_england_w_s_central_chemistry_tt=tt_chemistry_new_england-tt_chemistry_w_s_central) %>% 
+  mutate(new_england_s_atlantic_chemistry_tt=tt_chemistry_new_england-tt_chemistry_s_atlantic) %>% 
+  mutate(new_england_pacific_chemistry_tt=tt_chemistry_new_england-tt_chemistry_pacific) %>% 
+  mutate(mountain_w_n_central_chemistry_tt=tt_chemistry_mountain-tt_chemistry_w_n_central) %>% 
+  mutate(mountain_w_s_central_chemistry_tt=tt_chemistry_mountain-tt_chemistry_w_s_central) %>% 
+  mutate(mountain_s_atlantic_chemistry_tt=tt_chemistry_mountain-tt_chemistry_s_atlantic) %>% 
+  mutate(mountain_pacific_chemistry_tt=tt_chemistry_mountain-tt_chemistry_pacific) %>% 
+  mutate(mountain_new_england_chemistry_tt=tt_chemistry_mountain-tt_chemistry_new_england) %>% 
+  mutate(mid_atlantic_w_n_central_chemistry_tt=tt_chemistry_mid_atlantic-tt_chemistry_w_n_central) %>% 
+  mutate(mid_atlantic_w_s_central_chemistry_tt=tt_chemistry_mid_atlantic-tt_chemistry_w_s_central) %>% 
+  mutate(mid_atlantic_s_atlantic_chemistry_tt=tt_chemistry_mid_atlantic-tt_chemistry_s_atlantic) %>% 
+  mutate(mid_atlantic_mountain_chemistry_tt=tt_chemistry_mid_atlantic-tt_chemistry_mountain) %>% 
+  mutate(mid_atlantic_new_england_chemistry_tt=tt_chemistry_mid_atlantic-tt_chemistry_new_england) %>% 
+  mutate(mid_atlantic_pacific_chemistry_tt=tt_chemistry_mid_atlantic-tt_chemistry_pacific) %>% 
+  mutate(e_s_central_w_n_central_chemistry_tt=tt_chemistry_e_s_central-tt_chemistry_w_n_central) %>% 
+  mutate(e_s_central_w_s_central_chemistry_tt=tt_chemistry_e_s_central-tt_chemistry_w_s_central) %>% 
+  mutate(e_s_central_mid_atlantic_chemistry_tt=tt_chemistry_e_s_central-tt_chemistry_mid_atlantic) %>% 
+  mutate(e_s_central_mountain_chemistry_tt=tt_chemistry_e_s_central-tt_chemistry_mountain) %>% 
+  mutate(e_s_central_new_england_chemistry_tt=tt_chemistry_e_s_central-tt_chemistry_new_england) %>% 
+  mutate(e_s_central_pacific_chemistry_tt=tt_chemistry_e_s_central-tt_chemistry_pacific) %>% 
+  mutate(e_s_central_s_atlantic_chemistry_tt=tt_chemistry_e_s_central-tt_chemistry_s_atlantic) %>% 
+  mutate(e_n_central_w_s_central_chemistry_tt=tt_chemistry_e_n_central-tt_chemistry_w_s_central) %>% 
+  mutate(e_n_central_e_s_central_chemistry_tt=tt_chemistry_e_n_central-tt_chemistry_e_s_central) %>% 
+  mutate(e_n_central_mid_atlantic_chemistry_tt=tt_chemistry_e_n_central-tt_chemistry_mid_atlantic) %>% 
+  mutate(e_n_central_mountain_chemistry_tt=tt_chemistry_e_n_central-tt_chemistry_mountain) %>% 
+  mutate(e_n_central_new_england_chemistry_tt=tt_chemistry_e_n_central-tt_chemistry_new_england) %>% 
+  mutate(e_n_central_pacific_chemistry_tt=tt_chemistry_e_n_central-tt_chemistry_pacific) %>% 
+  mutate(e_n_central_s_atlantic_chemistry_tt=tt_chemistry_e_n_central-tt_chemistry_s_atlantic) %>% 
+  mutate(e_n_central_w_n_central_chemistry_tt=tt_chemistry_e_n_central-tt_chemistry_w_n_central)
+
+#Calculating the probability that there is a greater proportion of women employed division A compared to division B for each department and position type
+#Tenure track
+division_diff_chemistry %>% 
+  summarize(sum(e_s_central_e_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mid_atlantic_e_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mid_atlantic_e_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mountain_e_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mountain_e_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mountain_mid_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(new_england_e_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(new_england_e_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(new_england_mid_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(new_england_mountain_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(pacific_e_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(pacific_e_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(pacific_mid_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(pacific_mountain_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(pacific_new_england_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(s_atlantic_e_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(s_atlantic_e_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(s_atlantic_mid_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(s_atlantic_mountain_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(s_atlantic_new_england_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(s_atlantic_pacific_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_n_central_e_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_n_central_e_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_n_central_mid_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_n_central_mountain_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_n_central_new_england_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_n_central_pacific_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_n_central_s_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_s_central_e_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_s_central_e_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_s_central_mid_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_s_central_mountain_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_s_central_new_england_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_s_central_pacific_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_s_central_s_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_s_central_w_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(w_n_central_w_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(s_atlantic_w_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(s_atlantic_w_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(pacific_w_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(pacific_w_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(pacific_s_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(new_england_w_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(new_england_w_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(new_england_s_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(new_england_pacific_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mountain_w_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mountain_w_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mountain_s_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mountain_pacific_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mountain_new_england_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mid_atlantic_w_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mid_atlantic_w_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mid_atlantic_s_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mid_atlantic_mountain_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mid_atlantic_new_england_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(mid_atlantic_pacific_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_s_central_w_n_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_s_central_w_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_s_central_mid_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_s_central_mountain_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_s_central_new_england_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_s_central_pacific_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_s_central_s_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_n_central_w_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_n_central_e_s_central_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_n_central_mid_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_n_central_mountain_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_n_central_new_england_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_n_central_pacific_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_n_central_s_atlantic_chemistry_tt>0)/nrow(.))
+division_diff_chemistry %>% 
+  summarize(sum(e_n_central_w_n_central_chemistry_tt>0)/nrow(.))
+
+
+#Calculating the mean difference value
+division_diff_chemistry %>% 
+  summarize(mean(e_s_central_e_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mid_atlantic_e_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mid_atlantic_e_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mountain_e_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mountain_e_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mountain_mid_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(new_england_e_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(new_england_e_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(new_england_mid_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(new_england_mountain_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(pacific_e_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(pacific_e_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(pacific_mid_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(pacific_mountain_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(pacific_new_england_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(s_atlantic_e_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(s_atlantic_e_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(s_atlantic_mid_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(s_atlantic_mountain_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(s_atlantic_new_england_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(s_atlantic_pacific_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_n_central_e_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_n_central_e_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_n_central_mid_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_n_central_mountain_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_n_central_new_england_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_n_central_pacific_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_n_central_s_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_s_central_e_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_s_central_e_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_s_central_mid_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_s_central_mountain_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_s_central_new_england_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_s_central_pacific_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_s_central_s_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_s_central_w_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(w_n_central_w_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(s_atlantic_w_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(s_atlantic_w_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(pacific_w_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(pacific_w_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(pacific_s_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(new_england_w_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(new_england_w_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(new_england_s_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(new_england_pacific_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mountain_w_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mountain_w_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mountain_s_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mountain_pacific_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mountain_new_england_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mid_atlantic_w_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mid_atlantic_w_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mid_atlantic_s_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mid_atlantic_mountain_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mid_atlantic_new_england_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(mid_atlantic_pacific_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_s_central_w_n_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_s_central_w_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_s_central_mid_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_s_central_mountain_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_s_central_new_england_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_s_central_pacific_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_s_central_s_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_n_central_w_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_n_central_e_s_central_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_n_central_mid_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_n_central_mountain_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_n_central_new_england_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_n_central_pacific_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_n_central_s_atlantic_chemistry_tt))
+division_diff_chemistry %>% 
+  summarize(mean(e_n_central_w_n_central_chemistry_tt))
+
+```
+
+Computer science
+```{r}
+#Computer science
+division_diff_comp_sci <- specific_model_prop %>% 
+  mutate(e_s_central_e_n_central_comp_sci_tt=tt_comp_sci_e_s_central-tt_comp_sci_e_n_central) %>% 
+  mutate(mid_atlantic_e_n_central_comp_sci_tt=tt_comp_sci_mid_atlantic-tt_comp_sci_e_n_central) %>% 
+  mutate(mid_atlantic_e_s_central_comp_sci_tt=tt_comp_sci_s_atlantic-tt_comp_sci_e_s_central) %>% 
+  mutate(mountain_e_n_central_comp_sci_tt=tt_comp_sci_mountain-tt_comp_sci_e_n_central) %>% 
+  mutate(mountain_e_s_central_comp_sci_tt=tt_comp_sci_mountain-tt_comp_sci_e_s_central) %>% 
+  mutate(mountain_mid_atlantic_comp_sci_tt=tt_comp_sci_mountain-tt_comp_sci_mid_atlantic) %>% 
+  mutate(new_england_e_n_central_comp_sci_tt=tt_comp_sci_new_england-tt_comp_sci_e_n_central) %>% 
+  mutate(new_england_e_s_central_comp_sci_tt=tt_comp_sci_new_england-tt_comp_sci_e_s_central) %>% 
+  mutate(new_england_mid_atlantic_comp_sci_tt=tt_comp_sci_new_england-tt_comp_sci_mid_atlantic) %>% 
+  mutate(new_england_mountain_comp_sci_tt=tt_comp_sci_new_england-tt_comp_sci_mountain) %>% 
+  mutate(pacific_e_n_central_comp_sci_tt=tt_comp_sci_pacific-tt_comp_sci_e_n_central) %>% 
+  mutate(pacific_e_s_central_comp_sci_tt=tt_comp_sci_pacific-tt_comp_sci_e_s_central) %>% 
+  mutate(pacific_mid_atlantic_comp_sci_tt=tt_comp_sci_pacific-tt_comp_sci_mid_atlantic) %>% 
+  mutate(pacific_mountain_comp_sci_tt=tt_comp_sci_pacific-tt_comp_sci_mountain) %>% 
+  mutate(pacific_new_england_comp_sci_tt=tt_comp_sci_pacific-tt_comp_sci_new_england) %>% 
+  mutate(s_atlantic_e_n_central_comp_sci_tt=tt_comp_sci_s_atlantic-tt_comp_sci_e_n_central) %>% 
+  mutate(s_atlantic_e_s_central_comp_sci_tt=tt_comp_sci_s_atlantic-tt_comp_sci_e_s_central) %>% 
+  mutate(s_atlantic_mid_atlantic_comp_sci_tt=tt_comp_sci_s_atlantic-tt_comp_sci_mid_atlantic) %>% 
+  mutate(s_atlantic_mountain_comp_sci_tt=tt_comp_sci_s_atlantic-tt_comp_sci_mountain) %>% 
+  mutate(s_atlantic_new_england_comp_sci_tt=tt_comp_sci_s_atlantic-tt_comp_sci_new_england) %>% 
+  mutate(s_atlantic_pacific_comp_sci_tt=tt_comp_sci_s_atlantic-tt_comp_sci_pacific) %>% 
+  mutate(w_n_central_e_n_central_comp_sci_tt=tt_comp_sci_w_n_central-tt_comp_sci_e_n_central) %>% 
+  mutate(w_n_central_e_s_central_comp_sci_tt=tt_comp_sci_w_n_central-tt_comp_sci_e_s_central) %>% 
+  mutate(w_n_central_mid_atlantic_comp_sci_tt=tt_comp_sci_w_n_central-tt_comp_sci_mid_atlantic) %>% 
+  mutate(w_n_central_mountain_comp_sci_tt=tt_comp_sci_w_n_central-tt_comp_sci_mountain) %>% 
+  mutate(w_n_central_new_england_comp_sci_tt=tt_comp_sci_w_n_central-tt_comp_sci_new_england) %>% 
+  mutate(w_n_central_pacific_comp_sci_tt=tt_comp_sci_w_n_central-tt_comp_sci_pacific) %>% 
+  mutate(w_n_central_s_atlantic_comp_sci_tt=tt_comp_sci_w_n_central-tt_comp_sci_s_atlantic) %>% 
+  mutate(w_s_central_e_n_central_comp_sci_tt=tt_comp_sci_w_s_central-tt_comp_sci_e_n_central) %>% 
+  mutate(w_s_central_e_s_central_comp_sci_tt=tt_comp_sci_w_s_central-tt_comp_sci_e_s_central) %>% 
+  mutate(w_s_central_mid_atlantic_comp_sci_tt=tt_comp_sci_w_s_central-tt_comp_sci_mid_atlantic) %>% 
+  mutate(w_s_central_mountain_comp_sci_tt=tt_comp_sci_w_s_central-tt_comp_sci_mountain) %>% 
+  mutate(w_s_central_new_england_comp_sci_tt=tt_comp_sci_w_s_central-tt_comp_sci_new_england) %>% 
+  mutate(w_s_central_pacific_comp_sci_tt=tt_comp_sci_w_s_central-tt_comp_sci_pacific) %>% 
+  mutate(w_s_central_s_atlantic_comp_sci_tt=tt_comp_sci_w_s_central-tt_comp_sci_s_atlantic) %>% 
+  mutate(w_s_central_w_n_central_comp_sci_tt=tt_comp_sci_w_s_central-tt_comp_sci_w_n_central) %>% 
+  mutate(w_n_central_w_s_central_comp_sci_tt=tt_comp_sci_w_n_central-tt_comp_sci_w_s_central) %>% 
+  mutate(s_atlantic_w_n_central_comp_sci_tt=tt_comp_sci_s_atlantic-tt_comp_sci_w_n_central) %>% 
+  mutate(s_atlantic_w_s_central_comp_sci_tt=tt_comp_sci_s_atlantic-tt_comp_sci_w_s_central) %>% 
+  mutate(pacific_w_n_central_comp_sci_tt=tt_comp_sci_pacific-tt_comp_sci_w_n_central) %>% 
+  mutate(pacific_w_s_central_comp_sci_tt=tt_comp_sci_pacific-tt_comp_sci_w_s_central) %>% 
+  mutate(pacific_s_atlantic_comp_sci_tt=tt_comp_sci_pacific-tt_comp_sci_s_atlantic) %>% 
+  mutate(new_england_w_n_central_comp_sci_tt=tt_comp_sci_new_england-tt_comp_sci_w_n_central) %>% 
+  mutate(new_england_w_s_central_comp_sci_tt=tt_comp_sci_new_england-tt_comp_sci_w_s_central) %>% 
+  mutate(new_england_s_atlantic_comp_sci_tt=tt_comp_sci_new_england-tt_comp_sci_s_atlantic) %>% 
+  mutate(new_england_pacific_comp_sci_tt=tt_comp_sci_new_england-tt_comp_sci_pacific) %>% 
+  mutate(mountain_w_n_central_comp_sci_tt=tt_comp_sci_mountain-tt_comp_sci_w_n_central) %>% 
+  mutate(mountain_w_s_central_comp_sci_tt=tt_comp_sci_mountain-tt_comp_sci_w_s_central) %>% 
+  mutate(mountain_s_atlantic_comp_sci_tt=tt_comp_sci_mountain-tt_comp_sci_s_atlantic) %>% 
+  mutate(mountain_pacific_comp_sci_tt=tt_comp_sci_mountain-tt_comp_sci_pacific) %>% 
+  mutate(mountain_new_england_comp_sci_tt=tt_comp_sci_mountain-tt_comp_sci_new_england) %>% 
+  mutate(mid_atlantic_w_n_central_comp_sci_tt=tt_comp_sci_mid_atlantic-tt_comp_sci_w_n_central) %>% 
+  mutate(mid_atlantic_w_s_central_comp_sci_tt=tt_comp_sci_mid_atlantic-tt_comp_sci_w_s_central) %>% 
+  mutate(mid_atlantic_s_atlantic_comp_sci_tt=tt_comp_sci_mid_atlantic-tt_comp_sci_s_atlantic) %>% 
+  mutate(mid_atlantic_mountain_comp_sci_tt=tt_comp_sci_mid_atlantic-tt_comp_sci_mountain) %>% 
+  mutate(mid_atlantic_new_england_comp_sci_tt=tt_comp_sci_mid_atlantic-tt_comp_sci_new_england) %>% 
+  mutate(mid_atlantic_pacific_comp_sci_tt=tt_comp_sci_mid_atlantic-tt_comp_sci_pacific) %>% 
+  mutate(e_s_central_w_n_central_comp_sci_tt=tt_comp_sci_e_s_central-tt_comp_sci_w_n_central) %>% 
+  mutate(e_s_central_w_s_central_comp_sci_tt=tt_comp_sci_e_s_central-tt_comp_sci_w_s_central) %>% 
+  mutate(e_s_central_mid_atlantic_comp_sci_tt=tt_comp_sci_e_s_central-tt_comp_sci_mid_atlantic) %>% 
+  mutate(e_s_central_mountain_comp_sci_tt=tt_comp_sci_e_s_central-tt_comp_sci_mountain) %>% 
+  mutate(e_s_central_new_england_comp_sci_tt=tt_comp_sci_e_s_central-tt_comp_sci_new_england) %>% 
+  mutate(e_s_central_pacific_comp_sci_tt=tt_comp_sci_e_s_central-tt_comp_sci_pacific) %>% 
+  mutate(e_s_central_s_atlantic_comp_sci_tt=tt_comp_sci_e_s_central-tt_comp_sci_s_atlantic) %>% 
+  mutate(e_n_central_w_s_central_comp_sci_tt=tt_comp_sci_e_n_central-tt_comp_sci_w_s_central) %>% 
+  mutate(e_n_central_e_s_central_comp_sci_tt=tt_comp_sci_e_n_central-tt_comp_sci_e_s_central) %>% 
+  mutate(e_n_central_mid_atlantic_comp_sci_tt=tt_comp_sci_e_n_central-tt_comp_sci_mid_atlantic) %>% 
+  mutate(e_n_central_mountain_comp_sci_tt=tt_comp_sci_e_n_central-tt_comp_sci_mountain) %>% 
+  mutate(e_n_central_new_england_comp_sci_tt=tt_comp_sci_e_n_central-tt_comp_sci_new_england) %>% 
+  mutate(e_n_central_pacific_comp_sci_tt=tt_comp_sci_e_n_central-tt_comp_sci_pacific) %>% 
+  mutate(e_n_central_s_atlantic_comp_sci_tt=tt_comp_sci_e_n_central-tt_comp_sci_s_atlantic) %>% 
+  mutate(e_n_central_w_n_central_comp_sci_tt=tt_comp_sci_e_n_central-tt_comp_sci_w_n_central)
+
+#Calculating the probability that there is a greater proportion of women employed division A compared to division B for each department and position type
+#Tenure track
+division_diff_comp_sci %>% 
+  summarize(sum(e_s_central_e_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mid_atlantic_e_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mid_atlantic_e_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mountain_e_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mountain_e_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mountain_mid_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(new_england_e_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(new_england_e_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(new_england_mid_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(new_england_mountain_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(pacific_e_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(pacific_e_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(pacific_mid_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(pacific_mountain_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(pacific_new_england_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(s_atlantic_e_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(s_atlantic_e_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(s_atlantic_mid_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(s_atlantic_mountain_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(s_atlantic_new_england_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(s_atlantic_pacific_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_n_central_e_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_n_central_e_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_n_central_mid_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_n_central_mountain_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_n_central_new_england_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_n_central_pacific_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_n_central_s_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_s_central_e_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_s_central_e_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_s_central_mid_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_s_central_mountain_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_s_central_new_england_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_s_central_pacific_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_s_central_s_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_s_central_w_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(w_n_central_w_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(s_atlantic_w_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(s_atlantic_w_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(pacific_w_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(pacific_w_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(pacific_s_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(new_england_w_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(new_england_w_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(new_england_s_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(new_england_pacific_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mountain_w_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mountain_w_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mountain_s_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mountain_pacific_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mountain_new_england_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mid_atlantic_w_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mid_atlantic_w_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mid_atlantic_s_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mid_atlantic_mountain_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mid_atlantic_new_england_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(mid_atlantic_pacific_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_s_central_w_n_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_s_central_w_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_s_central_mid_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_s_central_mountain_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_s_central_new_england_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_s_central_pacific_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_s_central_s_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_n_central_w_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_n_central_e_s_central_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_n_central_mid_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_n_central_mountain_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_n_central_new_england_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_n_central_pacific_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_n_central_s_atlantic_comp_sci_tt>0)/nrow(.))
+division_diff_comp_sci %>% 
+  summarize(sum(e_n_central_w_n_central_comp_sci_tt>0)/nrow(.))
+
+
+#Calculating the mean difference value
+division_diff_comp_sci %>% 
+  summarize(mean(e_s_central_e_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mid_atlantic_e_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mid_atlantic_e_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mountain_e_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mountain_e_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mountain_mid_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(new_england_e_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(new_england_e_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(new_england_mid_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(new_england_mountain_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(pacific_e_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(pacific_e_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(pacific_mid_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(pacific_mountain_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(pacific_new_england_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(s_atlantic_e_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(s_atlantic_e_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(s_atlantic_mid_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(s_atlantic_mountain_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(s_atlantic_new_england_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(s_atlantic_pacific_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_n_central_e_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_n_central_e_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_n_central_mid_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_n_central_mountain_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_n_central_new_england_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_n_central_pacific_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_n_central_s_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_s_central_e_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_s_central_e_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_s_central_mid_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_s_central_mountain_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_s_central_new_england_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_s_central_pacific_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_s_central_s_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_s_central_w_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(w_n_central_w_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(s_atlantic_w_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(s_atlantic_w_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(pacific_w_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(pacific_w_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(pacific_s_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(new_england_w_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(new_england_w_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(new_england_s_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(new_england_pacific_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mountain_w_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mountain_w_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mountain_s_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mountain_pacific_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mountain_new_england_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mid_atlantic_w_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mid_atlantic_w_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mid_atlantic_s_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mid_atlantic_mountain_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mid_atlantic_new_england_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(mid_atlantic_pacific_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_s_central_w_n_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_s_central_w_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_s_central_mid_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_s_central_mountain_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_s_central_new_england_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_s_central_pacific_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_s_central_s_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_n_central_w_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_n_central_e_s_central_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_n_central_mid_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_n_central_mountain_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_n_central_new_england_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_n_central_pacific_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_n_central_s_atlantic_comp_sci_tt))
+division_diff_comp_sci %>% 
+  summarize(mean(e_n_central_w_n_central_comp_sci_tt))
+
+```
+
+Engineering
+```{r}
+#Engineering
+division_diff_engineering <- specific_model_prop %>% 
+  mutate(e_s_central_e_n_central_engineering_tt=tt_engineering_e_s_central-tt_engineering_e_n_central) %>% 
+  mutate(mid_atlantic_e_n_central_engineering_tt=tt_engineering_mid_atlantic-tt_engineering_e_n_central) %>% 
+  mutate(mid_atlantic_e_s_central_engineering_tt=tt_engineering_s_atlantic-tt_engineering_e_s_central) %>% 
+  mutate(mountain_e_n_central_engineering_tt=tt_engineering_mountain-tt_engineering_e_n_central) %>% 
+  mutate(mountain_e_s_central_engineering_tt=tt_engineering_mountain-tt_engineering_e_s_central) %>% 
+  mutate(mountain_mid_atlantic_engineering_tt=tt_engineering_mountain-tt_engineering_mid_atlantic) %>% 
+  mutate(new_england_e_n_central_engineering_tt=tt_engineering_new_england-tt_engineering_e_n_central) %>% 
+  mutate(new_england_e_s_central_engineering_tt=tt_engineering_new_england-tt_engineering_e_s_central) %>% 
+  mutate(new_england_mid_atlantic_engineering_tt=tt_engineering_new_england-tt_engineering_mid_atlantic) %>% 
+  mutate(new_england_mountain_engineering_tt=tt_engineering_new_england-tt_engineering_mountain) %>% 
+  mutate(pacific_e_n_central_engineering_tt=tt_engineering_pacific-tt_engineering_e_n_central) %>% 
+  mutate(pacific_e_s_central_engineering_tt=tt_engineering_pacific-tt_engineering_e_s_central) %>% 
+  mutate(pacific_mid_atlantic_engineering_tt=tt_engineering_pacific-tt_engineering_mid_atlantic) %>% 
+  mutate(pacific_mountain_engineering_tt=tt_engineering_pacific-tt_engineering_mountain) %>% 
+  mutate(pacific_new_england_engineering_tt=tt_engineering_pacific-tt_engineering_new_england) %>% 
+  mutate(s_atlantic_e_n_central_engineering_tt=tt_engineering_s_atlantic-tt_engineering_e_n_central) %>% 
+  mutate(s_atlantic_e_s_central_engineering_tt=tt_engineering_s_atlantic-tt_engineering_e_s_central) %>% 
+  mutate(s_atlantic_mid_atlantic_engineering_tt=tt_engineering_s_atlantic-tt_engineering_mid_atlantic) %>% 
+  mutate(s_atlantic_mountain_engineering_tt=tt_engineering_s_atlantic-tt_engineering_mountain) %>% 
+  mutate(s_atlantic_new_england_engineering_tt=tt_engineering_s_atlantic-tt_engineering_new_england) %>% 
+  mutate(s_atlantic_pacific_engineering_tt=tt_engineering_s_atlantic-tt_engineering_pacific) %>% 
+  mutate(w_n_central_e_n_central_engineering_tt=tt_engineering_w_n_central-tt_engineering_e_n_central) %>% 
+  mutate(w_n_central_e_s_central_engineering_tt=tt_engineering_w_n_central-tt_engineering_e_s_central) %>% 
+  mutate(w_n_central_mid_atlantic_engineering_tt=tt_engineering_w_n_central-tt_engineering_mid_atlantic) %>% 
+  mutate(w_n_central_mountain_engineering_tt=tt_engineering_w_n_central-tt_engineering_mountain) %>% 
+  mutate(w_n_central_new_england_engineering_tt=tt_engineering_w_n_central-tt_engineering_new_england) %>% 
+  mutate(w_n_central_pacific_engineering_tt=tt_engineering_w_n_central-tt_engineering_pacific) %>% 
+  mutate(w_n_central_s_atlantic_engineering_tt=tt_engineering_w_n_central-tt_engineering_s_atlantic) %>% 
+  mutate(w_s_central_e_n_central_engineering_tt=tt_engineering_w_s_central-tt_engineering_e_n_central) %>% 
+  mutate(w_s_central_e_s_central_engineering_tt=tt_engineering_w_s_central-tt_engineering_e_s_central) %>% 
+  mutate(w_s_central_mid_atlantic_engineering_tt=tt_engineering_w_s_central-tt_engineering_mid_atlantic) %>% 
+  mutate(w_s_central_mountain_engineering_tt=tt_engineering_w_s_central-tt_engineering_mountain) %>% 
+  mutate(w_s_central_new_england_engineering_tt=tt_engineering_w_s_central-tt_engineering_new_england) %>% 
+  mutate(w_s_central_pacific_engineering_tt=tt_engineering_w_s_central-tt_engineering_pacific) %>% 
+  mutate(w_s_central_s_atlantic_engineering_tt=tt_engineering_w_s_central-tt_engineering_s_atlantic) %>% 
+  mutate(w_s_central_w_n_central_engineering_tt=tt_engineering_w_s_central-tt_engineering_w_n_central) %>% 
+  mutate(w_n_central_w_s_central_engineering_tt=tt_engineering_w_n_central-tt_engineering_w_s_central) %>% 
+  mutate(s_atlantic_w_n_central_engineering_tt=tt_engineering_s_atlantic-tt_engineering_w_n_central) %>% 
+  mutate(s_atlantic_w_s_central_engineering_tt=tt_engineering_s_atlantic-tt_engineering_w_s_central) %>% 
+  mutate(pacific_w_n_central_engineering_tt=tt_engineering_pacific-tt_engineering_w_n_central) %>% 
+  mutate(pacific_w_s_central_engineering_tt=tt_engineering_pacific-tt_engineering_w_s_central) %>% 
+  mutate(pacific_s_atlantic_engineering_tt=tt_engineering_pacific-tt_engineering_s_atlantic) %>% 
+  mutate(new_england_w_n_central_engineering_tt=tt_engineering_new_england-tt_engineering_w_n_central) %>% 
+  mutate(new_england_w_s_central_engineering_tt=tt_engineering_new_england-tt_engineering_w_s_central) %>% 
+  mutate(new_england_s_atlantic_engineering_tt=tt_engineering_new_england-tt_engineering_s_atlantic) %>% 
+  mutate(new_england_pacific_engineering_tt=tt_engineering_new_england-tt_engineering_pacific) %>% 
+  mutate(mountain_w_n_central_engineering_tt=tt_engineering_mountain-tt_engineering_w_n_central) %>% 
+  mutate(mountain_w_s_central_engineering_tt=tt_engineering_mountain-tt_engineering_w_s_central) %>% 
+  mutate(mountain_s_atlantic_engineering_tt=tt_engineering_mountain-tt_engineering_s_atlantic) %>% 
+  mutate(mountain_pacific_engineering_tt=tt_engineering_mountain-tt_engineering_pacific) %>% 
+  mutate(mountain_new_england_engineering_tt=tt_engineering_mountain-tt_engineering_new_england) %>% 
+  mutate(mid_atlantic_w_n_central_engineering_tt=tt_engineering_mid_atlantic-tt_engineering_w_n_central) %>% 
+  mutate(mid_atlantic_w_s_central_engineering_tt=tt_engineering_mid_atlantic-tt_engineering_w_s_central) %>% 
+  mutate(mid_atlantic_s_atlantic_engineering_tt=tt_engineering_mid_atlantic-tt_engineering_s_atlantic) %>% 
+  mutate(mid_atlantic_mountain_engineering_tt=tt_engineering_mid_atlantic-tt_engineering_mountain) %>% 
+  mutate(mid_atlantic_new_england_engineering_tt=tt_engineering_mid_atlantic-tt_engineering_new_england) %>% 
+  mutate(mid_atlantic_pacific_engineering_tt=tt_engineering_mid_atlantic-tt_engineering_pacific) %>% 
+  mutate(e_s_central_w_n_central_engineering_tt=tt_engineering_e_s_central-tt_engineering_w_n_central) %>% 
+  mutate(e_s_central_w_s_central_engineering_tt=tt_engineering_e_s_central-tt_engineering_w_s_central) %>% 
+  mutate(e_s_central_mid_atlantic_engineering_tt=tt_engineering_e_s_central-tt_engineering_mid_atlantic) %>% 
+  mutate(e_s_central_mountain_engineering_tt=tt_engineering_e_s_central-tt_engineering_mountain) %>% 
+  mutate(e_s_central_new_england_engineering_tt=tt_engineering_e_s_central-tt_engineering_new_england) %>% 
+  mutate(e_s_central_pacific_engineering_tt=tt_engineering_e_s_central-tt_engineering_pacific) %>% 
+  mutate(e_s_central_s_atlantic_engineering_tt=tt_engineering_e_s_central-tt_engineering_s_atlantic) %>% 
+  mutate(e_n_central_w_s_central_engineering_tt=tt_engineering_e_n_central-tt_engineering_w_s_central) %>% 
+  mutate(e_n_central_e_s_central_engineering_tt=tt_engineering_e_n_central-tt_engineering_e_s_central) %>% 
+  mutate(e_n_central_mid_atlantic_engineering_tt=tt_engineering_e_n_central-tt_engineering_mid_atlantic) %>% 
+  mutate(e_n_central_mountain_engineering_tt=tt_engineering_e_n_central-tt_engineering_mountain) %>% 
+  mutate(e_n_central_new_england_engineering_tt=tt_engineering_e_n_central-tt_engineering_new_england) %>% 
+  mutate(e_n_central_pacific_engineering_tt=tt_engineering_e_n_central-tt_engineering_pacific) %>% 
+  mutate(e_n_central_s_atlantic_engineering_tt=tt_engineering_e_n_central-tt_engineering_s_atlantic) %>% 
+  mutate(e_n_central_w_n_central_engineering_tt=tt_engineering_e_n_central-tt_engineering_w_n_central)
+
+#Calculating the probability that there is a greater proportion of women employed division A compared to division B for each department and position type
+#Tenure track
+division_diff_engineering %>% 
+  summarize(sum(e_s_central_e_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mid_atlantic_e_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mid_atlantic_e_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mountain_e_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mountain_e_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mountain_mid_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(new_england_e_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(new_england_e_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(new_england_mid_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(new_england_mountain_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(pacific_e_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(pacific_e_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(pacific_mid_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(pacific_mountain_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(pacific_new_england_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(s_atlantic_e_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(s_atlantic_e_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(s_atlantic_mid_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(s_atlantic_mountain_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(s_atlantic_new_england_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(s_atlantic_pacific_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_n_central_e_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_n_central_e_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_n_central_mid_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_n_central_mountain_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_n_central_new_england_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_n_central_pacific_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_n_central_s_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_s_central_e_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_s_central_e_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_s_central_mid_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_s_central_mountain_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_s_central_new_england_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_s_central_pacific_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_s_central_s_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_s_central_w_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(w_n_central_w_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(s_atlantic_w_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(s_atlantic_w_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(pacific_w_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(pacific_w_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(pacific_s_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(new_england_w_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(new_england_w_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(new_england_s_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(new_england_pacific_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mountain_w_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mountain_w_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mountain_s_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mountain_pacific_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mountain_new_england_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mid_atlantic_w_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mid_atlantic_w_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mid_atlantic_s_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mid_atlantic_mountain_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mid_atlantic_new_england_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(mid_atlantic_pacific_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_s_central_w_n_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_s_central_w_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_s_central_mid_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_s_central_mountain_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_s_central_new_england_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_s_central_pacific_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_s_central_s_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_n_central_w_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_n_central_e_s_central_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_n_central_mid_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_n_central_mountain_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_n_central_new_england_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_n_central_pacific_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_n_central_s_atlantic_engineering_tt>0)/nrow(.))
+division_diff_engineering %>% 
+  summarize(sum(e_n_central_w_n_central_engineering_tt>0)/nrow(.))
+
+
+#Calculating the mean difference value
+division_diff_engineering %>% 
+  summarize(mean(e_s_central_e_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mid_atlantic_e_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mid_atlantic_e_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mountain_e_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mountain_e_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mountain_mid_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(new_england_e_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(new_england_e_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(new_england_mid_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(new_england_mountain_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(pacific_e_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(pacific_e_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(pacific_mid_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(pacific_mountain_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(pacific_new_england_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(s_atlantic_e_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(s_atlantic_e_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(s_atlantic_mid_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(s_atlantic_mountain_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(s_atlantic_new_england_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(s_atlantic_pacific_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_n_central_e_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_n_central_e_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_n_central_mid_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_n_central_mountain_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_n_central_new_england_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_n_central_pacific_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_n_central_s_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_s_central_e_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_s_central_e_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_s_central_mid_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_s_central_mountain_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_s_central_new_england_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_s_central_pacific_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_s_central_s_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_s_central_w_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(w_n_central_w_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(s_atlantic_w_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(s_atlantic_w_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(pacific_w_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(pacific_w_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(pacific_s_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(new_england_w_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(new_england_w_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(new_england_s_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(new_england_pacific_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mountain_w_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mountain_w_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mountain_s_atlantic_engineering_tt))
+
+
+division_diff_engineering %>% 
+  summarize(mean(mountain_pacific_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mountain_new_england_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mid_atlantic_w_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mid_atlantic_w_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mid_atlantic_s_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mid_atlantic_mountain_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mid_atlantic_new_england_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(mid_atlantic_pacific_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_s_central_w_n_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_s_central_w_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_s_central_mid_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_s_central_mountain_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_s_central_new_england_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_s_central_pacific_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_s_central_s_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_n_central_w_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_n_central_e_s_central_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_n_central_mid_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_n_central_mountain_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_n_central_new_england_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_n_central_pacific_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_n_central_s_atlantic_engineering_tt))
+division_diff_engineering %>% 
+  summarize(mean(e_n_central_w_n_central_engineering_tt))
+
+```
+
+Math
+```{r}
+#Math
+division_diff_math <- specific_model_prop %>% 
+  mutate(e_s_central_e_n_central_math_tt=tt_math_e_s_central-tt_math_e_n_central) %>% 
+  mutate(mid_atlantic_e_n_central_math_tt=tt_math_mid_atlantic-tt_math_e_n_central) %>% 
+  mutate(mid_atlantic_e_s_central_math_tt=tt_math_s_atlantic-tt_math_e_s_central) %>% 
+  mutate(mountain_e_n_central_math_tt=tt_math_mountain-tt_math_e_n_central) %>% 
+  mutate(mountain_e_s_central_math_tt=tt_math_mountain-tt_math_e_s_central) %>% 
+  mutate(mountain_mid_atlantic_math_tt=tt_math_mountain-tt_math_mid_atlantic) %>% 
+  mutate(new_england_e_n_central_math_tt=tt_math_new_england-tt_math_e_n_central) %>% 
+  mutate(new_england_e_s_central_math_tt=tt_math_new_england-tt_math_e_s_central) %>% 
+  mutate(new_england_mid_atlantic_math_tt=tt_math_new_england-tt_math_mid_atlantic) %>% 
+  mutate(new_england_mountain_math_tt=tt_math_new_england-tt_math_mountain) %>% 
+  mutate(pacific_e_n_central_math_tt=tt_math_pacific-tt_math_e_n_central) %>% 
+  mutate(pacific_e_s_central_math_tt=tt_math_pacific-tt_math_e_s_central) %>% 
+  mutate(pacific_mid_atlantic_math_tt=tt_math_pacific-tt_math_mid_atlantic) %>% 
+  mutate(pacific_mountain_math_tt=tt_math_pacific-tt_math_mountain) %>% 
+  mutate(pacific_new_england_math_tt=tt_math_pacific-tt_math_new_england) %>% 
+  mutate(s_atlantic_e_n_central_math_tt=tt_math_s_atlantic-tt_math_e_n_central) %>% 
+  mutate(s_atlantic_e_s_central_math_tt=tt_math_s_atlantic-tt_math_e_s_central) %>% 
+  mutate(s_atlantic_mid_atlantic_math_tt=tt_math_s_atlantic-tt_math_mid_atlantic) %>% 
+  mutate(s_atlantic_mountain_math_tt=tt_math_s_atlantic-tt_math_mountain) %>% 
+  mutate(s_atlantic_new_england_math_tt=tt_math_s_atlantic-tt_math_new_england) %>% 
+  mutate(s_atlantic_pacific_math_tt=tt_math_s_atlantic-tt_math_pacific) %>% 
+  mutate(w_n_central_e_n_central_math_tt=tt_math_w_n_central-tt_math_e_n_central) %>% 
+  mutate(w_n_central_e_s_central_math_tt=tt_math_w_n_central-tt_math_e_s_central) %>% 
+  mutate(w_n_central_mid_atlantic_math_tt=tt_math_w_n_central-tt_math_mid_atlantic) %>% 
+  mutate(w_n_central_mountain_math_tt=tt_math_w_n_central-tt_math_mountain) %>% 
+  mutate(w_n_central_new_england_math_tt=tt_math_w_n_central-tt_math_new_england) %>% 
+  mutate(w_n_central_pacific_math_tt=tt_math_w_n_central-tt_math_pacific) %>% 
+  mutate(w_n_central_s_atlantic_math_tt=tt_math_w_n_central-tt_math_s_atlantic) %>% 
+  mutate(w_s_central_e_n_central_math_tt=tt_math_w_s_central-tt_math_e_n_central) %>% 
+  mutate(w_s_central_e_s_central_math_tt=tt_math_w_s_central-tt_math_e_s_central) %>% 
+  mutate(w_s_central_mid_atlantic_math_tt=tt_math_w_s_central-tt_math_mid_atlantic) %>% 
+  mutate(w_s_central_mountain_math_tt=tt_math_w_s_central-tt_math_mountain) %>% 
+  mutate(w_s_central_new_england_math_tt=tt_math_w_s_central-tt_math_new_england) %>% 
+  mutate(w_s_central_pacific_math_tt=tt_math_w_s_central-tt_math_pacific) %>% 
+  mutate(w_s_central_s_atlantic_math_tt=tt_math_w_s_central-tt_math_s_atlantic) %>% 
+  mutate(w_s_central_w_n_central_math_tt=tt_math_w_s_central-tt_math_w_n_central) %>% 
+  mutate(w_n_central_w_s_central_math_tt=tt_math_w_n_central-tt_math_w_s_central) %>% 
+  mutate(s_atlantic_w_n_central_math_tt=tt_math_s_atlantic-tt_math_w_n_central) %>% 
+  mutate(s_atlantic_w_s_central_math_tt=tt_math_s_atlantic-tt_math_w_s_central) %>% 
+  mutate(pacific_w_n_central_math_tt=tt_math_pacific-tt_math_w_n_central) %>% 
+  mutate(pacific_w_s_central_math_tt=tt_math_pacific-tt_math_w_s_central) %>% 
+  mutate(pacific_s_atlantic_math_tt=tt_math_pacific-tt_math_s_atlantic) %>% 
+  mutate(new_england_w_n_central_math_tt=tt_math_new_england-tt_math_w_n_central) %>% 
+  mutate(new_england_w_s_central_math_tt=tt_math_new_england-tt_math_w_s_central) %>% 
+  mutate(new_england_s_atlantic_math_tt=tt_math_new_england-tt_math_s_atlantic) %>% 
+  mutate(new_england_pacific_math_tt=tt_math_new_england-tt_math_pacific) %>% 
+  mutate(mountain_w_n_central_math_tt=tt_math_mountain-tt_math_w_n_central) %>% 
+  mutate(mountain_w_s_central_math_tt=tt_math_mountain-tt_math_w_s_central) %>% 
+  mutate(mountain_s_atlantic_math_tt=tt_math_mountain-tt_math_s_atlantic) %>% 
+  mutate(mountain_pacific_math_tt=tt_math_mountain-tt_math_pacific) %>% 
+  mutate(mountain_new_england_math_tt=tt_math_mountain-tt_math_new_england) %>% 
+  mutate(mid_atlantic_w_n_central_math_tt=tt_math_mid_atlantic-tt_math_w_n_central) %>% 
+  mutate(mid_atlantic_w_s_central_math_tt=tt_math_mid_atlantic-tt_math_w_s_central) %>% 
+  mutate(mid_atlantic_s_atlantic_math_tt=tt_math_mid_atlantic-tt_math_s_atlantic) %>% 
+  mutate(mid_atlantic_mountain_math_tt=tt_math_mid_atlantic-tt_math_mountain) %>% 
+  mutate(mid_atlantic_new_england_math_tt=tt_math_mid_atlantic-tt_math_new_england) %>% 
+  mutate(mid_atlantic_pacific_math_tt=tt_math_mid_atlantic-tt_math_pacific) %>% 
+  mutate(e_s_central_w_n_central_math_tt=tt_math_e_s_central-tt_math_w_n_central) %>% 
+  mutate(e_s_central_w_s_central_math_tt=tt_math_e_s_central-tt_math_w_s_central) %>% 
+  mutate(e_s_central_mid_atlantic_math_tt=tt_math_e_s_central-tt_math_mid_atlantic) %>% 
+  mutate(e_s_central_mountain_math_tt=tt_math_e_s_central-tt_math_mountain) %>% 
+  mutate(e_s_central_new_england_math_tt=tt_math_e_s_central-tt_math_new_england) %>% 
+  mutate(e_s_central_pacific_math_tt=tt_math_e_s_central-tt_math_pacific) %>% 
+  mutate(e_s_central_s_atlantic_math_tt=tt_math_e_s_central-tt_math_s_atlantic) %>% 
+  mutate(e_n_central_w_s_central_math_tt=tt_math_e_n_central-tt_math_w_s_central) %>% 
+  mutate(e_n_central_e_s_central_math_tt=tt_math_e_n_central-tt_math_e_s_central) %>% 
+  mutate(e_n_central_mid_atlantic_math_tt=tt_math_e_n_central-tt_math_mid_atlantic) %>% 
+  mutate(e_n_central_mountain_math_tt=tt_math_e_n_central-tt_math_mountain) %>% 
+  mutate(e_n_central_new_england_math_tt=tt_math_e_n_central-tt_math_new_england) %>% 
+  mutate(e_n_central_pacific_math_tt=tt_math_e_n_central-tt_math_pacific) %>% 
+  mutate(e_n_central_s_atlantic_math_tt=tt_math_e_n_central-tt_math_s_atlantic) %>% 
+  mutate(e_n_central_w_n_central_math_tt=tt_math_e_n_central-tt_math_w_n_central)
+
+#Calculating the probability that there is a greater proportion of women employed division A compared to division B for each department and position type
+#Tenure track
+division_diff_math %>% 
+  summarize(sum(e_s_central_e_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mid_atlantic_e_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mid_atlantic_e_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mountain_e_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mountain_e_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mountain_mid_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(new_england_e_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(new_england_e_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(new_england_mid_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(new_england_mountain_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(pacific_e_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(pacific_e_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(pacific_mid_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(pacific_mountain_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(pacific_new_england_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(s_atlantic_e_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(s_atlantic_e_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(s_atlantic_mid_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(s_atlantic_mountain_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(s_atlantic_new_england_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(s_atlantic_pacific_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_n_central_e_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_n_central_e_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_n_central_mid_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_n_central_mountain_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_n_central_new_england_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_n_central_pacific_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_n_central_s_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_s_central_e_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_s_central_e_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_s_central_mid_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_s_central_mountain_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_s_central_new_england_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_s_central_pacific_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_s_central_s_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_s_central_w_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(w_n_central_w_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(s_atlantic_w_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(s_atlantic_w_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(pacific_w_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(pacific_w_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(pacific_s_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(new_england_w_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(new_england_w_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(new_england_s_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(new_england_pacific_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mountain_w_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mountain_w_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mountain_s_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mountain_pacific_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mountain_new_england_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mid_atlantic_w_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mid_atlantic_w_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mid_atlantic_s_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mid_atlantic_mountain_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mid_atlantic_new_england_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(mid_atlantic_pacific_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_s_central_w_n_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_s_central_w_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_s_central_mid_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_s_central_mountain_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_s_central_new_england_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_s_central_pacific_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_s_central_s_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_n_central_w_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_n_central_e_s_central_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_n_central_mid_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_n_central_mountain_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_n_central_new_england_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_n_central_pacific_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_n_central_s_atlantic_math_tt>0)/nrow(.))
+division_diff_math %>% 
+  summarize(sum(e_n_central_w_n_central_math_tt>0)/nrow(.))
+
+
+#Calculating the mean difference value
+division_diff_math %>% 
+  summarize(mean(e_s_central_e_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(mid_atlantic_e_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(mid_atlantic_e_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(mountain_e_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(mountain_e_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(mountain_mid_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(new_england_e_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(new_england_e_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(new_england_mid_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(new_england_mountain_math_tt))
+division_diff_math %>% 
+  summarize(mean(pacific_e_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(pacific_e_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(pacific_mid_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(pacific_mountain_math_tt))
+division_diff_math %>% 
+  summarize(mean(pacific_new_england_math_tt))
+division_diff_math %>% 
+  summarize(mean(s_atlantic_e_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(s_atlantic_e_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(s_atlantic_mid_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(s_atlantic_mountain_math_tt))
+division_diff_math %>% 
+  summarize(mean(s_atlantic_new_england_math_tt))
+division_diff_math %>% 
+  summarize(mean(s_atlantic_pacific_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_n_central_e_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_n_central_e_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_n_central_mid_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_n_central_mountain_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_n_central_new_england_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_n_central_pacific_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_n_central_s_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_s_central_e_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_s_central_e_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_s_central_mid_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_s_central_mountain_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_s_central_new_england_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_s_central_pacific_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_s_central_s_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_s_central_w_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(w_n_central_w_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(s_atlantic_w_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(s_atlantic_w_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(pacific_w_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(pacific_w_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(pacific_s_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(new_england_w_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(new_england_w_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(new_england_s_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(new_england_pacific_math_tt))
+division_diff_math %>% 
+  summarize(mean(mountain_w_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(mountain_w_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(mountain_s_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(mountain_pacific_math_tt))
+division_diff_math %>% 
+  summarize(mean(mountain_new_england_math_tt))
+division_diff_math %>% 
+  summarize(mean(mid_atlantic_w_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(mid_atlantic_w_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(mid_atlantic_s_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(mid_atlantic_mountain_math_tt))
+division_diff_math %>% 
+  summarize(mean(mid_atlantic_new_england_math_tt))
+division_diff_math %>% 
+  summarize(mean(mid_atlantic_pacific_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_s_central_w_n_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_s_central_w_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_s_central_mid_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_s_central_mountain_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_s_central_new_england_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_s_central_pacific_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_s_central_s_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_n_central_w_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_n_central_e_s_central_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_n_central_mid_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_n_central_mountain_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_n_central_new_england_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_n_central_pacific_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_n_central_s_atlantic_math_tt))
+division_diff_math %>% 
+  summarize(mean(e_n_central_w_n_central_math_tt))
+
+```
+
+Physics
+```{r}
+#Physics
+division_diff_physics <- specific_model_prop %>% 
+  mutate(e_s_central_e_n_central_physics_tt=tt_physics_e_s_central-tt_physics_e_n_central) %>% 
+  mutate(mid_atlantic_e_n_central_physics_tt=tt_physics_mid_atlantic-tt_physics_e_n_central) %>% 
+  mutate(mid_atlantic_e_s_central_physics_tt=tt_physics_s_atlantic-tt_physics_e_s_central) %>% 
+  mutate(mountain_e_n_central_physics_tt=tt_physics_mountain-tt_physics_e_n_central) %>% 
+  mutate(mountain_e_s_central_physics_tt=tt_physics_mountain-tt_physics_e_s_central) %>% 
+  mutate(mountain_mid_atlantic_physics_tt=tt_physics_mountain-tt_physics_mid_atlantic) %>% 
+  mutate(new_england_e_n_central_physics_tt=tt_physics_new_england-tt_physics_e_n_central) %>% 
+  mutate(new_england_e_s_central_physics_tt=tt_physics_new_england-tt_physics_e_s_central) %>% 
+  mutate(new_england_mid_atlantic_physics_tt=tt_physics_new_england-tt_physics_mid_atlantic) %>% 
+  mutate(new_england_mountain_physics_tt=tt_physics_new_england-tt_physics_mountain) %>% 
+  mutate(pacific_e_n_central_physics_tt=tt_physics_pacific-tt_physics_e_n_central) %>% 
+  mutate(pacific_e_s_central_physics_tt=tt_physics_pacific-tt_physics_e_s_central) %>% 
+  mutate(pacific_mid_atlantic_physics_tt=tt_physics_pacific-tt_physics_mid_atlantic) %>% 
+  mutate(pacific_mountain_physics_tt=tt_physics_pacific-tt_physics_mountain) %>% 
+  mutate(pacific_new_england_physics_tt=tt_physics_pacific-tt_physics_new_england) %>% 
+  mutate(s_atlantic_e_n_central_physics_tt=tt_physics_s_atlantic-tt_physics_e_n_central) %>% 
+  mutate(s_atlantic_e_s_central_physics_tt=tt_physics_s_atlantic-tt_physics_e_s_central) %>% 
+  mutate(s_atlantic_mid_atlantic_physics_tt=tt_physics_s_atlantic-tt_physics_mid_atlantic) %>% 
+  mutate(s_atlantic_mountain_physics_tt=tt_physics_s_atlantic-tt_physics_mountain) %>% 
+  mutate(s_atlantic_new_england_physics_tt=tt_physics_s_atlantic-tt_physics_new_england) %>% 
+  mutate(s_atlantic_pacific_physics_tt=tt_physics_s_atlantic-tt_physics_pacific) %>% 
+  mutate(w_n_central_e_n_central_physics_tt=tt_physics_w_n_central-tt_physics_e_n_central) %>% 
+  mutate(w_n_central_e_s_central_physics_tt=tt_physics_w_n_central-tt_physics_e_s_central) %>% 
+  mutate(w_n_central_mid_atlantic_physics_tt=tt_physics_w_n_central-tt_physics_mid_atlantic) %>% 
+  mutate(w_n_central_mountain_physics_tt=tt_physics_w_n_central-tt_physics_mountain) %>% 
+  mutate(w_n_central_new_england_physics_tt=tt_physics_w_n_central-tt_physics_new_england) %>% 
+  mutate(w_n_central_pacific_physics_tt=tt_physics_w_n_central-tt_physics_pacific) %>% 
+  mutate(w_n_central_s_atlantic_physics_tt=tt_physics_w_n_central-tt_physics_s_atlantic) %>% 
+  mutate(w_s_central_e_n_central_physics_tt=tt_physics_w_s_central-tt_physics_e_n_central) %>% 
+  mutate(w_s_central_e_s_central_physics_tt=tt_physics_w_s_central-tt_physics_e_s_central) %>% 
+  mutate(w_s_central_mid_atlantic_physics_tt=tt_physics_w_s_central-tt_physics_mid_atlantic) %>% 
+  mutate(w_s_central_mountain_physics_tt=tt_physics_w_s_central-tt_physics_mountain) %>% 
+  mutate(w_s_central_new_england_physics_tt=tt_physics_w_s_central-tt_physics_new_england) %>% 
+  mutate(w_s_central_pacific_physics_tt=tt_physics_w_s_central-tt_physics_pacific) %>% 
+  mutate(w_s_central_s_atlantic_physics_tt=tt_physics_w_s_central-tt_physics_s_atlantic) %>% 
+  mutate(w_s_central_w_n_central_physics_tt=tt_physics_w_s_central-tt_physics_w_n_central) %>% 
+  mutate(w_n_central_w_s_central_physics_tt=tt_physics_w_n_central-tt_physics_w_s_central) %>% 
+  mutate(s_atlantic_w_n_central_physics_tt=tt_physics_s_atlantic-tt_physics_w_n_central) %>% 
+  mutate(s_atlantic_w_s_central_physics_tt=tt_physics_s_atlantic-tt_physics_w_s_central) %>% 
+  mutate(pacific_w_n_central_physics_tt=tt_physics_pacific-tt_physics_w_n_central) %>% 
+  mutate(pacific_w_s_central_physics_tt=tt_physics_pacific-tt_physics_w_s_central) %>% 
+  mutate(pacific_s_atlantic_physics_tt=tt_physics_pacific-tt_physics_s_atlantic) %>% 
+  mutate(new_england_w_n_central_physics_tt=tt_physics_new_england-tt_physics_w_n_central) %>% 
+  mutate(new_england_w_s_central_physics_tt=tt_physics_new_england-tt_physics_w_s_central) %>% 
+  mutate(new_england_s_atlantic_physics_tt=tt_physics_new_england-tt_physics_s_atlantic) %>% 
+  mutate(new_england_pacific_physics_tt=tt_physics_new_england-tt_physics_pacific) %>% 
+  mutate(mountain_w_n_central_physics_tt=tt_physics_mountain-tt_physics_w_n_central) %>% 
+  mutate(mountain_w_s_central_physics_tt=tt_physics_mountain-tt_physics_w_s_central) %>% 
+  mutate(mountain_s_atlantic_physics_tt=tt_physics_mountain-tt_physics_s_atlantic) %>% 
+  mutate(mountain_pacific_physics_tt=tt_physics_mountain-tt_physics_pacific) %>% 
+  mutate(mountain_new_england_physics_tt=tt_physics_mountain-tt_physics_new_england) %>% 
+  mutate(mid_atlantic_w_n_central_physics_tt=tt_physics_mid_atlantic-tt_physics_w_n_central) %>% 
+  mutate(mid_atlantic_w_s_central_physics_tt=tt_physics_mid_atlantic-tt_physics_w_s_central) %>% 
+  mutate(mid_atlantic_s_atlantic_physics_tt=tt_physics_mid_atlantic-tt_physics_s_atlantic) %>% 
+  mutate(mid_atlantic_mountain_physics_tt=tt_physics_mid_atlantic-tt_physics_mountain) %>% 
+  mutate(mid_atlantic_new_england_physics_tt=tt_physics_mid_atlantic-tt_physics_new_england) %>% 
+  mutate(mid_atlantic_pacific_physics_tt=tt_physics_mid_atlantic-tt_physics_pacific) %>% 
+  mutate(e_s_central_w_n_central_physics_tt=tt_physics_e_s_central-tt_physics_w_n_central) %>% 
+  mutate(e_s_central_w_s_central_physics_tt=tt_physics_e_s_central-tt_physics_w_s_central) %>% 
+  mutate(e_s_central_mid_atlantic_physics_tt=tt_physics_e_s_central-tt_physics_mid_atlantic) %>% 
+  mutate(e_s_central_mountain_physics_tt=tt_physics_e_s_central-tt_physics_mountain) %>% 
+  mutate(e_s_central_new_england_physics_tt=tt_physics_e_s_central-tt_physics_new_england) %>% 
+  mutate(e_s_central_pacific_physics_tt=tt_physics_e_s_central-tt_physics_pacific) %>% 
+  mutate(e_s_central_s_atlantic_physics_tt=tt_physics_e_s_central-tt_physics_s_atlantic) %>% 
+  mutate(e_n_central_w_s_central_physics_tt=tt_physics_e_n_central-tt_physics_w_s_central) %>% 
+  mutate(e_n_central_e_s_central_physics_tt=tt_physics_e_n_central-tt_physics_e_s_central) %>% 
+  mutate(e_n_central_mid_atlantic_physics_tt=tt_physics_e_n_central-tt_physics_mid_atlantic) %>% 
+  mutate(e_n_central_mountain_physics_tt=tt_physics_e_n_central-tt_physics_mountain) %>% 
+  mutate(e_n_central_new_england_physics_tt=tt_physics_e_n_central-tt_physics_new_england) %>% 
+  mutate(e_n_central_pacific_physics_tt=tt_physics_e_n_central-tt_physics_pacific) %>% 
+  mutate(e_n_central_s_atlantic_physics_tt=tt_physics_e_n_central-tt_physics_s_atlantic) %>% 
+  mutate(e_n_central_w_n_central_physics_tt=tt_physics_e_n_central-tt_physics_w_n_central)
+
+#Calculating the probability that there is a greater proportion of women employed division A compared to division B for each department and position type
+#Tenure track
+division_diff_physics %>% 
+  summarize(sum(e_s_central_e_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mid_atlantic_e_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mid_atlantic_e_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mountain_e_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mountain_e_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mountain_mid_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(new_england_e_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(new_england_e_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(new_england_mid_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(new_england_mountain_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(pacific_e_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(pacific_e_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(pacific_mid_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(pacific_mountain_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(pacific_new_england_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(s_atlantic_e_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(s_atlantic_e_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(s_atlantic_mid_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(s_atlantic_mountain_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(s_atlantic_new_england_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(s_atlantic_pacific_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_n_central_e_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_n_central_e_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_n_central_mid_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_n_central_mountain_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_n_central_new_england_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_n_central_pacific_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_n_central_s_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_s_central_e_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_s_central_e_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_s_central_mid_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_s_central_mountain_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_s_central_new_england_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_s_central_pacific_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_s_central_s_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_s_central_w_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(w_n_central_w_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(s_atlantic_w_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(s_atlantic_w_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(pacific_w_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(pacific_w_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(pacific_s_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(new_england_w_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(new_england_w_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(new_england_s_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(new_england_pacific_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mountain_w_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mountain_w_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mountain_s_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mountain_pacific_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mountain_new_england_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mid_atlantic_w_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mid_atlantic_w_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mid_atlantic_s_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mid_atlantic_mountain_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mid_atlantic_new_england_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(mid_atlantic_pacific_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_s_central_w_n_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_s_central_w_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_s_central_mid_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_s_central_mountain_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_s_central_new_england_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_s_central_pacific_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_s_central_s_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_n_central_w_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_n_central_e_s_central_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_n_central_mid_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_n_central_mountain_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_n_central_new_england_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_n_central_pacific_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_n_central_s_atlantic_physics_tt>0)/nrow(.))
+division_diff_physics %>% 
+  summarize(sum(e_n_central_w_n_central_physics_tt>0)/nrow(.))
+
+
+#Calculating the mean difference value
+division_diff_physics %>% 
+  summarize(mean(e_s_central_e_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mid_atlantic_e_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mid_atlantic_e_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mountain_e_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mountain_e_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mountain_mid_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(new_england_e_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(new_england_e_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(new_england_mid_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(new_england_mountain_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(pacific_e_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(pacific_e_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(pacific_mid_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(pacific_mountain_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(pacific_new_england_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(s_atlantic_e_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(s_atlantic_e_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(s_atlantic_mid_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(s_atlantic_mountain_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(s_atlantic_new_england_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(s_atlantic_pacific_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_n_central_e_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_n_central_e_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_n_central_mid_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_n_central_mountain_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_n_central_new_england_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_n_central_pacific_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_n_central_s_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_s_central_e_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_s_central_e_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_s_central_mid_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_s_central_mountain_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_s_central_new_england_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_s_central_pacific_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_s_central_s_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_s_central_w_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(w_n_central_w_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(s_atlantic_w_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(s_atlantic_w_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(pacific_w_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(pacific_w_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(pacific_s_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(new_england_w_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(new_england_w_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(new_england_s_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(new_england_pacific_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mountain_w_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mountain_w_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mountain_s_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mountain_pacific_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mountain_new_england_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mid_atlantic_w_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mid_atlantic_w_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mid_atlantic_s_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mid_atlantic_mountain_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mid_atlantic_new_england_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(mid_atlantic_pacific_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_s_central_w_n_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_s_central_w_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_s_central_mid_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_s_central_mountain_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_s_central_new_england_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_s_central_pacific_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_s_central_s_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_n_central_w_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_n_central_e_s_central_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_n_central_mid_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_n_central_mountain_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_n_central_new_england_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_n_central_pacific_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_n_central_s_atlantic_physics_tt))
+division_diff_physics %>% 
+  summarize(mean(e_n_central_w_n_central_physics_tt))
+
+```
+
+Data regarding the differences as calculated from the model
+```{r}
+diffs <- read_csv("Data/differences.csv")
+diffs$y <- with(diffs, factor(y, levels=rev(sort(unique(y)))))
+```
+
+Making the heat map figure for each STEM field
+```{r}
+biology_heat <- diffs %>% 
+  filter(department=="biology") %>% 
+  ggplot(aes(x=x, y=y, fill=prop_difference))+
+  geom_tile()+
+  geom_text(aes(label=prop_difference), color="black", size=2.5, nudge_y=0.2)+
+  geom_text(aes(label=probability), color="black", size=2.5, nudge_y=-0.2)+
+  theme(axis.text.x=element_text(angle=45, vjust=0.5, hjust=-0.1))+
+  theme(axis.title.x=element_blank())+
+  theme(axis.title.y=element_blank())+
+  scale_fill_gradient2(low="#D41159", mid="white", high="#1A85FF")+
+  scale_x_discrete(position="top")+
+  coord_fixed()
+
+biology_heat
+
+ggsave("biology_heat_tt.jpg", plot=biology_heat, width=6, height=4, dpi=1000)
+```
+
+```{r}
+chemistry_heat <- diffs %>% 
+  filter(department=="chemistry") %>% 
+  ggplot(aes(x=x, y=y, fill=prop_difference))+
+  geom_tile()+
+  geom_text(aes(label=prop_difference), color="black", size=2.5, nudge_y=0.2)+
+  geom_text(aes(label=probability), color="black", size=2.5, nudge_y=-0.2)+
+  theme(axis.text.x=element_text(angle=45, vjust=0.5, hjust=-0.1))+
+  theme(axis.title.x=element_blank())+
+  theme(axis.title.y=element_blank())+
+  scale_fill_gradient2(low="#D41159", mid="white", high="#1A85FF")+
+  scale_x_discrete(position="top")+
+  coord_fixed()
+
+chemistry_heat
+
+ggsave("chemistry_heat_tt.jpg", plot=chemistry_heat, width=6, height=4, dpi=1000)
+```
+
+```{r}
+comp_sci_heat <- diffs %>% 
+  filter(department=="comp_sci") %>% 
+  ggplot(aes(x=x, y=y, fill=prop_difference))+
+  geom_tile()+
+  geom_text(aes(label=prop_difference), color="black", size=2.5, nudge_y=0.2)+
+  geom_text(aes(label=probability), color="black", size=2.5, nudge_y=-0.2)+
+  theme(axis.text.x=element_text(angle=45, vjust=0.5, hjust=-0.1))+
+  theme(axis.title.x=element_blank())+
+  theme(axis.title.y=element_blank())+
+  scale_fill_gradient2(low="#D41159", mid="white", high="#1A85FF")+
+  scale_x_discrete(position="top")+
+  coord_fixed()
+
+comp_sci_heat
+
+ggsave("comp_sci_heat_tt.jpg", plot=comp_sci_heat, width=6, height=4, dpi=1000)
+```
+
+```{r}
+engineering_heat <- diffs %>% 
+  filter(department=="engineering") %>% 
+  ggplot(aes(x=x, y=y, fill=prop_difference))+
+  geom_tile()+
+  geom_text(aes(label=prop_difference), color="black", size=2.5, nudge_y=0.2)+
+  geom_text(aes(label=probability), color="black", size=2.5, nudge_y=-0.2)+
+  theme(axis.text.x=element_text(angle=45, vjust=0.5, hjust=-0.1))+
+  theme(axis.title.x=element_blank())+
+  theme(axis.title.y=element_blank())+
+  scale_fill_gradient2(low="#D41159", mid="white", high="#1A85FF")+
+  scale_x_discrete(position="top")+
+  coord_fixed()
+
+engineering_heat
+
+ggsave("engineering_heat_tt.jpg", plot=engineering_heat, width=6, height=4, dpi=1000)
+```
+
+```{r}
+math_heat <- diffs %>% 
+  filter(department=="math") %>% 
+  ggplot(aes(x=x, y=y, fill=prop_difference))+
+  geom_tile()+
+  geom_text(aes(label=prop_difference), color="black", size=2.5, nudge_y=0.2)+
+  geom_text(aes(label=probability), color="black", size=2.5, nudge_y=-0.2)+
+  theme(axis.text.x=element_text(angle=45, vjust=0.5, hjust=-0.1))+
+  theme(axis.title.x=element_blank())+
+  theme(axis.title.y=element_blank())+
+  scale_fill_gradient2(low="#D41159", mid="white", high="#1A85FF")+
+  scale_x_discrete(position="top")+
+  coord_fixed()
+
+math_heat
+
+ggsave("math_heat_tt.jpg", plot=math_heat, width=6, height=4, dpi=1000)
+```
+
+```{r}
+physics_heat <- diffs %>% 
+  filter(department=="physics") %>% 
+  ggplot(aes(x=x, y=y, fill=prop_difference))+
+  geom_tile()+
+  geom_text(aes(label=prop_difference), color="black", size=2.5, nudge_y=0.2)+
+  geom_text(aes(label=probability), color="black", size=2.5, nudge_y=-0.2)+
+  theme(axis.text.x=element_text(angle=45, vjust=0.5, hjust=-0.1))+
+  theme(axis.title.x=element_blank())+
+  theme(axis.title.y=element_blank())+
+  scale_fill_gradient2(low="#D41159", mid="white", high="#1A85FF")+
+  scale_x_discrete(position="top")+
+  coord_fixed()
+
+physics_heat
+
+ggsave("physics_heat_tt.jpg", plot=physics_heat, width=6, height=4, dpi=1000)
+```
+
